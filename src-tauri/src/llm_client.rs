@@ -705,15 +705,19 @@ pub async fn send_chat_completion_stream(
         Some(level) => reasoning_params(provider, level),
     };
 
-    let mut request_body = ChatCompletionRequest {
-        model: model.to_string(),
-        messages,
-        stream: true,
-        response_format: None,
-        reasoning,
-    };
+let mut request_body = ChatCompletionRequest {
+            model: model.to_string(),
+            messages,
+            stream: true,
+            response_format: None,
+            reasoning,
+        };
+        debug!(
+            "Streaming chat completion reasoning fields: {:?}",
+            request_body.reasoning
+        );
 
-    let mut response = client
+        let mut response = client
         .post(&url)
         .json(&request_body)
         .send()

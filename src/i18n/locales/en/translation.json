@@ -754,6 +754,7 @@
     "diffTitle": "Original vs. current result diff",
     "diffAria": "Compare original",
     "cancel": "Cancel",
+    "closeTitle": "Close composer",
     "keysHint": "Shift+Enter for a new line"
   }
 }

@@ -384,6 +384,18 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
       onClick={() => textareaRef.current?.focus()}
     >
       <div className="composer__glow" aria-hidden="true" />
+      <button
+        type="button"
+        className="composer__close"
+        aria-label={t("composer.closeTitle")}
+        title={t("composer.closeTitle")}
+        onClick={(e) => {
+          e.stopPropagation();
+          cancel();
+        }}
+      >
+        {String.fromCharCode(0x2715)}
+      </button>
       {modes.length > 0 && (
         <div className="composer__modes" role="group" aria-label={t("composer.modesAriaLabel")}>
           {modes.map((m) => (

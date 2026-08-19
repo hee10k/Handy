@@ -33,6 +33,36 @@
   pointer-events: none;
 }
 
+.composer__close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.composer__close:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.composer.composer--streaming .composer__close {
+  background: rgba(255, 159, 10, 0.25);
+  color: #ff9f0a;
+}
+
 .composer.composer--composing .composer__glow {
   opacity: 1;
 }
@@ -138,7 +168,8 @@
   flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
+  padding-right: 28px;
 }
 
 .composer__mode {

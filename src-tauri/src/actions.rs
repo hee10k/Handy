@@ -905,6 +905,7 @@ struct CancelAction;
 
 impl ShortcutAction for CancelAction {
     fn start(&self, app: &AppHandle, _binding_id: &str, _shortcut_str: &str) {
+        log::info!("[esc-debug] global CancelAction fired (cancel shortcut)");
         utils::cancel_current_operation(app);
     }
 

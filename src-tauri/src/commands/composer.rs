@@ -439,6 +439,7 @@ pub fn commit_composer(
 #[tauri::command]
 #[specta::specta]
 pub fn cancel_composer(app: AppHandle) -> Result<(), String> {
+    log::info!("[esc-debug] cancel_composer invoked");
     let focus = take_captured_focus();
     let _ = app.clone().run_on_main_thread(move || {
         hide_composer(&app);

@@ -754,6 +754,7 @@
     "diffTitle": "원문 v0 ↔ 현재 결과 diff",
     "diffAria": "원문 비교",
     "cancel": "취소",
+    "closeTitle": "컴포저 닫기",
     "keysHint": "Shift+Enter 줄바꿈"
   }
 }
