@@ -7,7 +7,7 @@
 //! `transform-delta` / `transform-done` / `transform-error` events by
 //! `transform::run_transform`.
 
-use crate::llm_client;
+use crate::llm_client::{self, REASONING_LEVELS};
 use crate::secret;
 use crate::settings::{
     get_settings, write_settings, PostProcessProvider, APPLE_INTELLIGENCE_DEFAULT_MODEL_ID,
@@ -109,6 +109,51 @@ pub fn set_transform_model(
 ) -> Result<(), String> {
     let mut settings = get_settings(&app);
     settings.post_process_models.insert(provider_id, model);
+    write_settings(&app, settings);
+    Ok(())
+}
+
+/// The reasoning/thinking level for a provider's transform requests, or
+/// `None` when unset (the provider default applies). Values are
+/// `none`|`low`|`medium`|`high`|`xhigh`|`max`; `none` disables thinking.
+#[tauri::command]
+#[specta::specta]
+pub fn get_transform_reasoning_effort(
+    app: AppHandle,
+    provider_id: String,
+) -> Result<Option<String>, String> {
+    let settings = get_settings(&app);
+    Ok(settings.reasoning_effort_for(&provider_id))
+}
+
+/// Persist the reasoning/thinking level for a provider's transform requests.
+/// `None` clears the override (falls back to the provider default), and an
+/// unknown value is rejected.
+#[tauri::command]
+#[specta::specta]
+pub fn set_transform_reasoning_effort(
+    app: AppHandle,
+    provider_id: String,
+    effort: Option<String>,
+) -> Result<(), String> {
+    if let Some(value) = &effort {
+        let level = value.trim().to_lowercase();
+        if !REASONING_LEVELS.contains(&level.as_str()) {
+            return Err(format!(
+                "Unknown reasoning effort '{value}'. Expected one of: {}",
+                REASONING_LEVELS.join(", ")
+            ));
+        }
+    }
+    let mut settings = get_settings(&app);
+    match effort {
+        Some(value) if !value.trim().is_empty() => {
+            settings.post_process_reasoning_effort.insert(provider_id, value);
+        }
+        _ => {
+            settings.post_process_reasoning_effort.remove(&provider_id);
+        }
+    }
     write_settings(&app, settings);
     Ok(())
 }

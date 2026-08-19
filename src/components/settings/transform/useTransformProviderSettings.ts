@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettings } from "../../../hooks/useSettings";
 import { useSettingsStore } from "../../../stores/settingsStore";
@@ -28,6 +28,11 @@ type TransformProviderSettingsState = {
   modelOptions: ModelOption[];
   isModelUpdating: boolean;
   isFetchingModels: boolean;
+  // Reasoning/thinking level for the selected provider's transform requests.
+  // "" = unset (provider default); otherwise one of REASONING_LEVELS.
+  reasoningEffort: string;
+  reasoningLevels: string[];
+  handleReasoningEffortChange: (value: string) => void;
   handleProviderSelect: (providerId: string) => void;
   handleModelSelect: (value: string) => void;
   handleModelCreate: (value: string) => void;
@@ -104,7 +109,42 @@ export const useTransformProviderSettings =
       [setPostProcessModelOptions],
     );
 
-    const handleProviderSelect = useCallback(
+    const [reasoningEffort, setReasoningEffort] = useState("");
+  const reasoningLevels = ["none", "low", "medium", "high", "xhigh", "max"];
+
+  // Load the effective reasoning level for the selected provider (raw invoke so
+  // we stay decoupled from the generated bindings type for the new setting).
+  useEffect(() => {
+    let disposed = false;
+    void invoke<string | null>("get_transform_reasoning_effort", {
+      providerId: selectedProviderId,
+    })
+      .then((value) => {
+        if (!disposed) setReasoningEffort(value ?? "");
+      })
+      .catch(() => {
+        if (!disposed) setReasoningEffort("");
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [selectedProviderId, refreshSettings]);
+
+  const handleReasoningEffortChange = useCallback(
+    (value: string) => {
+      void invoke("set_transform_reasoning_effort", {
+        providerId: selectedProviderId,
+        effort: value || null,
+      })
+        .then(() => refreshSettings())
+        .catch((err) =>
+          console.error("Failed to update transform reasoning effort:", err),
+        );
+    },
+    [selectedProviderId, refreshSettings],
+  );
+
+  const handleProviderSelect = useCallback(
       async (providerId: string) => {
         if (providerId === selectedProviderId) return;
         if (providerId === APPLE_PROVIDER_ID) return; // never selectable (see providerOptions)
@@ -271,6 +311,9 @@ export const useTransformProviderSettings =
       modelOptions,
       isModelUpdating,
       isFetchingModels,
+      reasoningEffort,
+      reasoningLevels,
+      handleReasoningEffortChange,
       handleProviderSelect,
       handleModelSelect,
       handleModelCreate,

@@ -185,10 +185,10 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
         .cloned()
         .unwrap_or_default();
 
-    // Ask these providers to skip reasoning/thinking — post-processing rarely
-    // benefits from it and it adds seconds of latency. llm_client picks the
-    // field the endpoint understands and retries without it if rejected.
-    let disable_reasoning = matches!(provider.id.as_str(), "custom" | "openrouter");
+    // Reasoning/thinking level for this provider (from settings, defaulting to
+    // `none` for custom/openrouter). llm_client picks the field the endpoint
+    // understands and retries without it if rejected.
+    let reasoning_effort = settings.reasoning_effort_for(&provider.id);
 
     if provider.supports_structured_output {
         debug!("Using structured outputs for provider '{}'", provider.id);
@@ -260,7 +260,7 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
             user_content,
             Some(system_prompt),
             Some(json_schema),
-            disable_reasoning,
+            reasoning_effort.clone(),
         )
         .await
         {
@@ -316,7 +316,7 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
         api_key,
         &model,
         processed_prompt,
-        disable_reasoning,
+        reasoning_effort,
     )
     .await
     {

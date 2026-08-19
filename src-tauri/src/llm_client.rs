@@ -87,6 +87,42 @@ fn reasoning_disable_params(provider: &PostProcessProvider) -> ReasoningParams {
     }
 }
 
+/// Reasoning/thinking levels a provider model may be asked for. `none` turns
+/// thinking off; the rest are effort depths a model supports.
+pub const REASONING_LEVELS: &[&str] = &["none", "low", "medium", "high", "xhigh", "max"];
+
+/// Build the reasoning request fields for a provider given an effort level.
+/// `none`/`disabled`/empty disables reasoning with the endpoint-appropriate
+/// field (see `reasoning_disable_params`); a concrete level asks for that
+/// depth. Endpoint families that don't accept `reasoning_effort` (OpenRouter,
+/// DeepSeek) get their own representation.
+fn reasoning_params(provider: &PostProcessProvider, effort: &str) -> ReasoningParams {
+    let level = effort.trim().to_lowercase();
+    let base_url = provider.base_url.to_lowercase();
+    match level.as_str() {
+        "" | "none" | "disabled" => reasoning_disable_params(provider),
+        _ if provider.id == "openrouter" => ReasoningParams {
+            reasoning: Some(ReasoningConfig {
+                effort: Some(level),
+                exclude: Some(true),
+            }),
+            ..Default::default()
+        },
+        _ if base_url.contains("api.deepseek.com") => ReasoningParams {
+            // DeepSeek's compatible API only exposes thinking on/off; a level
+            // maps to "enabled" — it has no effort granularity.
+            thinking: Some(serde_json::json!({ "type": "enabled" })),
+            ..Default::default()
+        },
+        "low" | "medium" | "high" | "xhigh" | "max" => ReasoningParams {
+            reasoning_effort: Some(level),
+            ..Default::default()
+        },
+        // Unknown level: send no reasoning fields.
+        _ => ReasoningParams::default(),
+    }
+}
+
 /// Endpoints (base_url|model) that rejected the reasoning-disable fields with a
 /// 4xx. Remembered for the lifetime of the process so every dictation after the
 /// first skips the doomed attempt and goes straight to a plain request.
@@ -305,7 +341,7 @@ pub async fn send_chat_completion(
     api_key: String,
     model: &str,
     prompt: String,
-    disable_reasoning: bool,
+    reasoning_effort: Option<String>,
 ) -> Result<Option<String>, String> {
     send_chat_completion_with_schema(
         provider,
@@ -314,7 +350,7 @@ pub async fn send_chat_completion(
         prompt,
         None,
         None,
-        disable_reasoning,
+        reasoning_effort,
     )
     .await
 }
@@ -323,12 +359,13 @@ pub async fn send_chat_completion(
 /// When json_schema is provided, uses structured outputs mode.
 /// system_prompt is used as the system message when provided.
 ///
-/// When disable_reasoning is set, the request carries the reasoning-disable
-/// fields the endpoint is expected to understand. Not every OpenAI-compatible
-/// endpoint accepts them (DeepSeek, Gemini's compat layer, and some OpenRouter
-/// upstreams reject with 400), so a 400/422 answer to such a request triggers
-/// one retry without the fields, and the rejection is remembered per
-/// (base_url, model) so later requests skip the failing attempt entirely.
+/// When `reasoning_effort` is set, the request carries the reasoning fields the
+/// endpoint is expected to understand (`none` disables thinking; a level asks
+/// for that depth). Not every OpenAI-compatible endpoint accepts them (DeepSeek,
+/// Gemini's compat layer, and some OpenRouter upstreams reject with 400), so a
+/// 400/422 answer to such a request triggers one retry without the fields, and
+/// the rejection is remembered per (base_url, model) so later requests skip the
+/// failing attempt entirely.
 pub async fn send_chat_completion_with_schema(
     provider: &PostProcessProvider,
     api_key: String,
@@ -336,7 +373,7 @@ pub async fn send_chat_completion_with_schema(
     user_content: String,
     system_prompt: Option<String>,
     json_schema: Option<Value>,
-    disable_reasoning: bool,
+    reasoning_effort: Option<String>,
 ) -> Result<Option<String>, String> {
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
@@ -376,10 +413,10 @@ pub async fn send_chat_completion_with_schema(
     });
 
     let key = endpoint_key(provider, model);
-    let reasoning = if disable_reasoning && !is_known_rejected(&key) {
-        reasoning_disable_params(provider)
-    } else {
-        ReasoningParams::default()
+    let reasoning = match reasoning_effort.as_deref() {
+        None => ReasoningParams::default(),
+        Some(level) if is_known_rejected(&key) => ReasoningParams::default(),
+        Some(level) => reasoning_params(provider, level),
     };
 
     let mut request_body = ChatCompletionRequest {
@@ -622,7 +659,7 @@ pub async fn send_chat_completion_stream(
     model: &str,
     system_prompt: Option<String>,
     user_content: String,
-    disable_reasoning: bool,
+    reasoning_effort: Option<String>,
 ) -> Result<impl Stream<Item = Result<Vec<String>, ChatStreamError>>, ChatStreamError> {
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
@@ -646,10 +683,10 @@ pub async fn send_chat_completion_stream(
     });
 
     let key = endpoint_key(provider, model);
-    let reasoning = if disable_reasoning && !is_known_rejected(&key) {
-        reasoning_disable_params(provider)
-    } else {
-        ReasoningParams::default()
+    let reasoning = match reasoning_effort.as_deref() {
+        None => ReasoningParams::default(),
+        Some(level) if is_known_rejected(&key) => ReasoningParams::default(),
+        Some(level) => reasoning_params(provider, level),
     };
 
     let mut request_body = ChatCompletionRequest {
@@ -951,6 +988,48 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn reasoning_level_custom_uses_top_level_reasoning_effort() {
+        let params = reasoning_params(&provider("custom", "https://token-plan.example/v1"), "high");
+        let json = request_json(params);
+        assert_eq!(json["reasoning_effort"], "high");
+        assert!(json.get("reasoning").is_none());
+        assert!(json.get("thinking").is_none());
+    }
+
+    #[test]
+    fn reasoning_level_openrouter_uses_nested_object() {
+        let params = reasoning_params(&provider("openrouter", "https://openrouter.ai/api/v1"), "medium");
+        let json = request_json(params);
+        assert!(json.get("reasoning_effort").is_none());
+        assert_eq!(json["reasoning"]["effort"], "medium");
+        assert_eq!(json["reasoning"]["exclude"], true);
+    }
+
+    #[test]
+    fn reasoning_level_deepseek_maps_to_thinking_enabled() {
+        let params = reasoning_params(&provider("custom", "https://api.deepseek.com"), "high");
+        let json = request_json(params);
+        assert!(json.get("reasoning_effort").is_none());
+        assert!(json.get("reasoning").is_none());
+        assert_eq!(json["thinking"]["type"], "enabled");
+    }
+
+    #[test]
+    fn reasoning_none_falls_through_to_disable_params() {
+        // "none" is the disable path, reusing the endpoint-appropriate field.
+        let params = reasoning_params(&provider("custom", "https://token-plan.example/v1"), "none");
+        let json = request_json(params);
+        assert_eq!(json["reasoning_effort"], "none");
+    }
+
+    #[test]
+    fn reasoning_unknown_level_sends_no_fields() {
+        let params = reasoning_params(&provider("custom", "https://x.example/v1"), "turbo");
+        assert!(params.is_empty());
+    }
+
+    #[test]
     fn reasoning_params_is_empty_tracks_all_fields() {
         assert!(ReasoningParams::default().is_empty());
         assert!(!ReasoningParams {
@@ -1051,7 +1130,7 @@ mod tests {
             "test-model",
             Some("be brief".to_string()),
             "hello".to_string(),
-            false,
+            None,
         )
         .await
         .expect("request should start")
@@ -1079,7 +1158,7 @@ mod tests {
             "test-model",
             None,
             "hi".to_string(),
-            false,
+            None,
         )
         .await
         {
@@ -1172,7 +1251,7 @@ mod tests {
             "test-model",
             None,
             "boiled".to_string(),
-            true, // disable_reasoning
+            Some("none".to_string()), // disable reasoning
         )
         .await
         .expect("should retry and succeed");

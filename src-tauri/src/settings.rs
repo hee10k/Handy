@@ -428,6 +428,13 @@ pub struct AppSettings {
     pub post_process_api_keys: SecretMap,
     #[serde(default = "default_post_process_models")]
     pub post_process_models: HashMap<String, String>,
+    /// Per-provider reasoning/thinking level the transform & dictate requests
+    /// ask the model for. Keys are provider ids; values are one of
+    /// `none` | `low` | `medium` | `high` | `xhigh` | `max`. Absent entries
+    /// fall back to the legacy default (`none` for `custom`/`openrouter`,
+    /// otherwise unset/auto). See `reasoning_effort_for`.
+    #[serde(default)]
+    pub post_process_reasoning_effort: HashMap<String, String>,
     #[serde(default = "default_post_process_prompts")]
     pub post_process_prompts: Vec<LLMPrompt>,
     #[serde(default)]
@@ -931,6 +938,7 @@ pub fn get_default_settings() -> AppSettings {
         post_process_providers: default_post_process_providers(),
         post_process_api_keys: default_post_process_api_keys(),
         post_process_models: default_post_process_models(),
+        post_process_reasoning_effort: HashMap::new(),
         post_process_prompts: default_post_process_prompts(),
         post_process_selected_prompt_id: None,
         mute_while_recording: false,
@@ -968,6 +976,25 @@ impl AppSettings {
         self.post_process_providers
             .iter()
             .find(|provider| provider.id == self.post_process_provider_id)
+    }
+
+    /// The reasoning/thinking level to request for a provider, or `None` when it
+    /// is unset (send a plain request with no reasoning fields). An explicit
+    /// per-provider setting wins; otherwise the legacy default applies (`none`
+    /// for `custom`/`openrouter`, which reasoned-disable by default).
+    pub fn reasoning_effort_for(&self, provider_id: &str) -> Option<String> {
+        if let Some(value) = self.post_process_reasoning_effort.get(provider_id) {
+            return if value.trim().is_empty() {
+                None
+            } else {
+                Some(value.clone())
+            };
+        }
+        if matches!(provider_id, "custom" | "openrouter") {
+            Some("none".to_string())
+        } else {
+            None
+        }
     }
 
     pub fn post_process_provider(&self, provider_id: &str) -> Option<&PostProcessProvider> {
@@ -1211,6 +1238,35 @@ mod tests {
         assert!(!settings.voice_input_enabled);
         // Bindings default to empty; the load path merges the real defaults in.
         assert!(settings.bindings.is_empty());
+    }
+
+    #[test]
+    fn reasoning_effort_for_maps_defaults_and_overrides() {
+        let mut settings: AppSettings =
+            serde_json::from_value(serde_json::json!({})).expect("parses");
+        // Legacy default: custom/openrouter disable reasoning; others are unset.
+        assert_eq!(settings.reasoning_effort_for("custom"), Some("none".to_string()));
+        assert_eq!(
+            settings.reasoning_effort_for("openrouter"),
+            Some("none".to_string())
+        );
+        assert_eq!(settings.reasoning_effort_for("openai"), None);
+
+        // An explicit override wins for any provider.
+        settings
+            .post_process_reasoning_effort
+            .insert("custom".to_string(), "high".to_string());
+        assert_eq!(settings.reasoning_effort_for("custom"), Some("high".to_string()));
+        settings
+            .post_process_reasoning_effort
+            .insert("openai".to_string(), "low".to_string());
+        assert_eq!(settings.reasoning_effort_for("openai"), Some("low".to_string()));
+
+        // A blank override clears the preference (falls back to unset).
+        settings
+            .post_process_reasoning_effort
+            .insert("openai".to_string(), "  ".to_string());
+        assert_eq!(settings.reasoning_effort_for("openai"), None);
     }
 
     /// Frozen snapshot of a real v0.9.0-era settings store, as written to

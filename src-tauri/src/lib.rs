@@ -733,6 +733,8 @@ pub fn run(cli_args: CliArgs) {
             commands::transform::set_transform_provider,
             commands::transform::get_transform_model,
             commands::transform::set_transform_model,
+            commands::transform::get_transform_reasoning_effort,
+            commands::transform::set_transform_reasoning_effort,
             commands::transform::fetch_transform_models,
             commands::transform::get_transform_api_key,
             commands::transform::set_transform_api_key,

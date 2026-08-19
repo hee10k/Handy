@@ -239,7 +239,7 @@ pub struct OpenAiTransformProvider {
     model: String,
     system_prompt: Option<String>,
     api_key: String,
-    disable_reasoning: bool,
+    reasoning_effort: Option<String>,
 }
 
 impl OpenAiTransformProvider {
@@ -248,14 +248,14 @@ impl OpenAiTransformProvider {
         model: String,
         system_prompt: Option<String>,
         api_key: String,
-        disable_reasoning: bool,
+        reasoning_effort: Option<String>,
     ) -> Self {
         Self {
             provider,
             model,
             system_prompt,
             api_key,
-            disable_reasoning,
+            reasoning_effort,
         }
     }
 }
@@ -273,7 +273,7 @@ impl TransformProvider for OpenAiTransformProvider {
         let model = self.model.clone();
         let system_prompt = self.system_prompt.clone();
         let api_key = self.api_key.clone();
-        let disable_reasoning = self.disable_reasoning;
+        let reasoning_effort = self.reasoning_effort.clone();
 
         Box::pin(async move {
             match send_chat_completion_stream(
@@ -282,7 +282,7 @@ impl TransformProvider for OpenAiTransformProvider {
                 &model,
                 system_prompt,
                 user_content,
-                disable_reasoning,
+                reasoning_effort,
             )
             .await
             {
@@ -442,14 +442,14 @@ pub async fn run_transform(
     };
 
     let (system_prompt, user_content) = build_messages(mode, &text, instruction.as_deref());
-    let disable_reasoning = matches!(provider.id.as_str(), "custom" | "openrouter");
+    let reasoning_effort = settings.reasoning_effort_for(&provider.id);
 
     let tp = OpenAiTransformProvider::new(
         provider,
         model,
         system_prompt,
         api_key,
-        disable_reasoning,
+        reasoning_effort,
     );
 
     let state = app.state::<TransformState>();

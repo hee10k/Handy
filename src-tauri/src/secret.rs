@@ -20,7 +20,9 @@
 
 use crate::settings::{get_settings, write_settings};
 use crate::settings::SecretMap;
-use log::{info, warn};
+use log::warn;
+#[cfg(feature = "keyring-store")]
+use log::info;
 use std::collections::HashMap;
 use std::fmt;
 use tauri::AppHandle;
@@ -292,6 +294,7 @@ pub fn provider_ids_with_keys(app: &AppHandle) -> Vec<String> {
 /// it moves any non-empty provider keys present in the settings SecretMap into
 /// the OS keyring and clears the plaintext copies; keys already in the keyring
 /// are left untouched (keyring is authoritative once populated).
+#[cfg_attr(not(feature = "keyring-store"), allow(unused_variables))]
 pub fn migrate_keys_to_keyring(app: &AppHandle) {
     #[cfg(feature = "keyring-store")]
     {

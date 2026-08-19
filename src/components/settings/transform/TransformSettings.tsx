@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { RefreshCcw } from "lucide-react";
 
 import { Alert } from "../../ui/Alert";
+import { Select } from "../../ui/Select";
 import {
   SettingContainer,
   SettingsGroup,
@@ -92,6 +93,7 @@ const TransformProviderConfig: React.FC = () => {
       )}
 
       {!state.isAppleProvider && (
+        <>
         <SettingContainer
           title={t("settings.transform.provider.model.title")}
           description={
@@ -135,6 +137,40 @@ const TransformProviderConfig: React.FC = () => {
             </ResetButton>
           </div>
         </SettingContainer>
+
+        <SettingContainer
+          title={t("settings.transform.provider.reasoning.title")}
+          description={t(
+            "settings.transform.provider.reasoning.description",
+          )}
+          descriptionMode="tooltip"
+          layout="stacked"
+          grouped={true}
+        >
+          <div className="flex items-center gap-2">
+            <Select
+              value={state.reasoningEffort}
+              options={[
+                { value: "", label: t("settings.transform.provider.reasoning.auto") },
+                ...state.reasoningLevels.map((level) => ({
+                  value: level,
+                  label: t(
+                    `settings.transform.provider.reasoning.levels.${level}`,
+                  ),
+                })),
+              ]}
+              onChange={(value) =>
+                state.handleReasoningEffortChange(value ?? "")
+              }
+              isClearable={false}
+              placeholder={t(
+                "settings.transform.provider.reasoning.placeholder",
+              )}
+              className="w-[380px]"
+            />
+          </div>
+        </SettingContainer>
+        </>
       )}
     </>
   );
