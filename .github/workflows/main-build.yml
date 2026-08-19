@@ -52,5 +52,9 @@ jobs:
       target: ${{ matrix.target }}
       build-args: ${{ matrix.args }}
       upload-artifacts: true
-      sign-binaries: true
+      # Tajagi fork test build: no Apple/Windows/Azure signing secrets exist on
+      # the fork, so sign-binaries must stay off or every macOS/Windows job
+      # fails at the certificate-import step. Unsigned artifacts are fine for
+      # local testing (install with the OS's unsigned-app warning).
+      sign-binaries: false
     secrets: inherit
