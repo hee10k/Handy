@@ -329,9 +329,29 @@ pub fn commit_composer(app: AppHandle, text: String) -> Result<(), String> {
     std::thread::spawn(move || {
         // Give the focus handoff a moment to land before injecting keys.
         std::thread::sleep(std::time::Duration::from_millis(80));
-        match crate::clipboard::paste(text, app_paste) {
-            Ok(()) => debug!("Composer commit pasted"),
-            Err(e) => error!("Composer commit paste failed: {e}"),
+        // macOS: the paste path uses main-thread-only AppKit APIs — the
+        // layout-aware Cmd+V resolution (input.rs TIS APIs) and, when
+        // reliable_paste is on, the NSPasteboard promise (paste_tx/macos.rs).
+        // Keep the 80ms settle on this worker, then dispatch the paste onto
+        // the main thread exactly like the transcription paste path
+        // (actions.rs). `run_on_main_thread` runs inline when already on the
+        // main thread, so the non-macOS branch below is equivalent.
+        #[cfg(target_os = "macos")]
+        {
+            let app_for_main = app_paste.clone();
+            let _ = app_for_main.run_on_main_thread(move || {
+                match crate::clipboard::paste(text, app_paste) {
+                    Ok(()) => debug!("Composer commit pasted"),
+                    Err(e) => error!("Composer commit paste failed: {e}"),
+                }
+            });
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            match crate::clipboard::paste(text, app_paste) {
+                Ok(()) => debug!("Composer commit pasted"),
+                Err(e) => error!("Composer commit paste failed: {e}"),
+            }
         }
     });
 
