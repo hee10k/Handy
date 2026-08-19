@@ -652,7 +652,7 @@ pub async fn send_chat_completion_stream(
         ReasoningParams::default()
     };
 
-    let request_body = ChatCompletionRequest {
+    let mut request_body = ChatCompletionRequest {
         model: model.to_string(),
         messages,
         stream: true,
@@ -660,19 +660,61 @@ pub async fn send_chat_completion_stream(
         reasoning,
     };
 
-    let response = client
+    let mut response = client
         .post(&url)
         .json(&request_body)
         .send()
         .await
         .map_err(|e| ChatStreamError::Transport(report_reqwest_error("HTTP request failed", &e)))?;
-    let status = response.status();
+    let mut status = response.status();
     debug!(
         "Streaming chat completion response received with status {} over {:?} from {}",
         status,
         response.version(),
         sanitized_url(response.url())
     );
+
+    // A 400/422 on a request carrying reasoning-disable fields is almost always
+    // the endpoint rejecting those fields — retry once without them. Mirror the
+    // non-streaming path so streaming consumers (e.g. transform) self-heal too.
+    if !status.is_success()
+        && matches!(status.as_u16(), 400 | 422)
+        && !request_body.reasoning.is_empty()
+    {
+        // Read and discard the body so the connection is released (it can quote
+        // secrets/content, so it is never propagated).
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|e| report_reqwest_error("Failed to read reasoning rejection response", &e));
+        info!(
+            "Streaming endpoint rejected request with reasoning disabled (status {}): {}. Retrying without reasoning fields",
+            status, error_text
+        );
+
+        request_body.reasoning = ReasoningParams::default();
+        response = client
+            .post(&url)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| ChatStreamError::Transport(report_reqwest_error("HTTP retry failed", &e)))?;
+        status = response.status();
+        debug!(
+            "Streaming chat completion retry response received with status {} over {:?} from {}",
+            status,
+            response.version(),
+            sanitized_url(response.url())
+        );
+
+        if status.is_success() {
+            info!(
+                "Retry without reasoning fields succeeded; '{}' (model '{}') will skip them from now on",
+                sanitized_url_for_log(base_url), model
+            );
+            remember_rejection(key);
+        }
+    }
 
     if !status.is_success() {
         // Read and discard the body so the connection is released. The raw body
@@ -1077,5 +1119,74 @@ mod tests {
         assert_eq!(json["stream"], true);
         assert_eq!(json["messages"][0]["role"], "system");
         assert_eq!(json["messages"][1]["role"], "user");
+    }
+
+    /// Serve exactly two requests: a 400 (reasoning-field rejection) then a
+    /// 200 SSE body. Returns the base URL and the streamed delta.
+    async fn serve_reject_then_sse(
+        first_delta: &str,
+    ) -> (String, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let reject = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "reasoning_effort unsupported".len(),
+            "reasoning_effort unsupported"
+        );
+        let sse_body = format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{}\"}}}}]}}\n\ndata: [DONE]\n\n",
+            first_delta
+        );
+        let ok =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse_body}", sse_body.len());
+
+        tokio::spawn(async move {
+            // First connection: reject with 400.
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut req = [0_u8; 4096];
+            let _ = stream.read(&mut req).await.unwrap();
+            stream.write_all(reject.as_bytes()).await.unwrap();
+            drop(stream);
+            // Second connection: the retry without reasoning fields -> 200 SSE.
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut req = [0_u8; 4096];
+            let _ = stream.read(&mut req).await.unwrap();
+            stream.write_all(ok.as_bytes()).await.unwrap();
+        });
+
+        (format!("http://{address}"), first_delta.to_string())
+    }
+
+    #[tokio::test]
+    async fn stream_retries_without_reasoning_fields_on_4xx() {
+        // custom provider + disable_reasoning=true is exactly the transform
+        // path: it sends reasoning_effort:"none", which some endpoints (e.g.
+        // Alibaba token-plan) reject with 400. The stream must self-heal by
+        // retrying without the reasoning fields and remember the endpoint.
+        let (base_url, expected) = serve_reject_then_sse("das boiled").await;
+        let p = provider("custom", &base_url);
+
+        let mut stream = send_chat_completion_stream(
+            &p,
+            String::from("k"),
+            "test-model",
+            None,
+            "boiled".to_string(),
+            true, // disable_reasoning
+        )
+        .await
+        .expect("should retry and succeed");
+
+        futures_util::pin_mut!(stream);
+        let mut joined = String::new();
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(deltas) => joined.push_str(&deltas.concat()),
+                Err(e) => panic!("stream failed after retry: {e:?}"),
+            }
+        }
+        assert_eq!(joined, expected, "delta must survive the reasoning retry");
+        // The rejected (base_url, model) pair is remembered so later calls skip it.
+        assert!(is_known_rejected(&endpoint_key(&p, "test-model")));
     }
 }
