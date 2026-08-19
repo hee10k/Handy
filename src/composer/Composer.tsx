@@ -1,7 +1,16 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import "./Composer.css";
+import {
+  canRedo,
+  canUndo,
+  currentText as revisionCurrentText,
+  EMPTY_REVISION,
+  originalText as revisionOriginalText,
+  revisionReducer,
+} from "./revisionReducer";
+import { diffTexts } from "./textDiff";
 
 // Transform mode metadata, mirroring the backend `TransformModeInfo` (ticket 03).
 // We read it from `list_transform_modes` so the selector never hardcodes modes;
@@ -52,6 +61,12 @@ const Composer: React.FC = () => {
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isComposing, setIsComposing] = useState(false);
+  // 리비전 이력 (ticket 05): v0=원문, 각 변환 완료가 vn 을 append. undo/redo 로 이동.
+  const [revisionState, dispatchRevision] = useReducer(
+    revisionReducer,
+    EMPTY_REVISION,
+  );
+  const [showDiff, setShowDiff] = useState(false);
 
   // Refs for values the mount-once event listeners must read without stale
   // closures. `streaming` guards against stray deltas after done/error/cancel;
@@ -93,6 +108,7 @@ const Composer: React.FC = () => {
           setStreaming(false);
           setError(null);
           setText(e.payload.text); // authoritative final result, now editable
+          dispatchRevision({ type: "append", text: e.payload.text });
         }),
         listen<TransformErrorPayload>("transform-error", (e) => {
           if (disposed || e.payload.mode !== modeRef.current) return;
@@ -115,6 +131,8 @@ const Composer: React.FC = () => {
           setStreaming(false);
           setError(null);
           setIsComposing(false);
+          dispatchRevision({ type: "reset" });
+          setShowDiff(false);
           requestAnimationFrame(() => {
             textareaRef.current?.focus();
           });
@@ -200,9 +218,13 @@ const Composer: React.FC = () => {
   const finalizeComposition = () => {
     setIsComposing(false);
     // Pull the final (IME-committed) value straight from the DOM so the last
-    // composed syllable is never dropped.
+    // composed syllable is never dropped, and mirror it into the revision draft
+    // so v0/current stays in sync with what the user actually typed.
     const el = textareaRef.current;
-    if (el) setText(el.value);
+    if (el) {
+      setText(el.value);
+      dispatchRevision({ type: "replace-current", text: el.value });
+    }
     const pending = pendingTransformRef.current;
     if (pending) {
       pendingTransformRef.current = null;
@@ -237,10 +259,38 @@ const Composer: React.FC = () => {
     void invoke("cancel_composer");
   };
 
+  // Undo/redo: move the revision pointer and restore the target revision's text
+  // into the textarea. Reading `revisionState` from the current render keeps the
+  // target index correct without stale closures.
+  const undo = () => {
+    if (!canUndo(revisionState)) return;
+    dispatchRevision({ type: "undo" });
+    setText(revisionState.revisions[revisionState.index - 1]);
+  };
+  const redo = () => {
+    if (!canRedo(revisionState)) return;
+    dispatchRevision({ type: "redo" });
+    setText(revisionState.revisions[revisionState.index + 1]);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // While the IME composes, Enter finalizes the current syllable and Esc
     // cancels the in-progress composition — never treat those as commit/close.
     if (e.nativeEvent.isComposing) {
+      return;
+    }
+    // Undo/redo across revisions (ticket 05). Meta = ⌘ on macOS, Ctrl elsewhere.
+    if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z")) {
+      e.preventDefault();
+      if (streaming) return; // never navigate mid-stream
+      if (e.shiftKey) redo();
+      else undo();
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && (e.key === "y" || e.key === "Y")) {
+      e.preventDefault();
+      if (streaming) return;
+      redo();
       return;
     }
     if (e.key === "Enter" && !e.shiftKey) {
@@ -262,6 +312,16 @@ const Composer: React.FC = () => {
   ]
     .filter(Boolean)
     .join(" ");
+
+  // Diff 세그먼트 (원문 v0 ↔ 현재 리비전): 리비전/토글이 바뀔 때만 재계산.
+  const diffSegments = useMemo(
+    () =>
+      diffTexts(
+        revisionOriginalText(revisionState),
+        revisionCurrentText(revisionState),
+      ),
+    [revisionState, showDiff],
+  );
 
   return (
     <div
@@ -303,7 +363,11 @@ const Composer: React.FC = () => {
         className="composer__input"
         value={text}
         onChange={(e) => {
-          if (!streaming) setText(e.target.value);
+          if (streaming) return;
+          setText(e.target.value);
+          // Mirror the live draft into the current revision (replaces it and
+          // drops any redo tail — the ticket-05 edit-after-rewind rule).
+          dispatchRevision({ type: "replace-current", text: e.target.value });
         }}
         onKeyDown={handleKeyDown}
         onCompositionStart={() => setIsComposing(true)}
@@ -313,6 +377,24 @@ const Composer: React.FC = () => {
         readOnly={streaming}
         spellCheck={false}
       />
+      {showDiff && (
+        <div className="composer__diff" role="region" aria-label="diff">
+          <div className="composer__diff-body">
+            {diffSegments.length === 0 ? (
+              <span className="composer__diff-empty">{"변환 전이라 원문과 같습니다"}</span>
+            ) : (
+              diffSegments.map((seg, idx) => (
+                <span
+                  key={idx}
+                  className={`composer__diff-token composer__diff-token--${seg.type}`}
+                >
+                  {seg.text}
+                </span>
+              ))
+            )}
+          </div>
+        </div>
+      )}
       <div className="composer__hint">
         <span className={statusClass} />
         <span className="composer__state">
@@ -324,6 +406,39 @@ const Composer: React.FC = () => {
                 ? "조합 중"
                 : "Enter 커밋 · Esc 취소"}
         </span>
+        {!streaming && revisionState.revisions.length > 0 && (
+          <span className="composer__actions">
+            <button
+              type="button"
+              className="composer__action"
+              onClick={undo}
+              disabled={!canUndo(revisionState)}
+              title="실행 취소 (⌘Z)"
+              aria-label={"실행 취소"}
+            >
+              {"↶"}
+            </button>
+            <button
+              type="button"
+              className="composer__action"
+              onClick={redo}
+              disabled={!canRedo(revisionState)}
+              title="다시 실행 (⇧⌘Z)"
+              aria-label={"다시 실행"}
+            >
+              {"↷"}
+            </button>
+            <button
+              type="button"
+              className={`composer__action ${showDiff ? "composer__action--active" : ""}`}
+              onClick={() => setShowDiff((v) => !v)}
+              title="원문 v0 ↔ 현재 결과 diff"
+              aria-label={"원문 비교"}
+            >
+              {"Δ"}
+            </button>
+          </span>
+        )}
         {streaming && (
           <button type="button" className="composer__cancel" onClick={cancelInFlight}>
             {"취소"}
