@@ -315,7 +315,15 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
   };
 
   const openSettings = () => {
-    void invoke("show_main_window_command");
+    // Leave the compositing session before showing settings: the composer is
+    // an always-on-top window, and switching the app to Regular activation for
+    // the settings window lets macOS dismiss/interleave the floating composer
+    // next to it (reported as both closing together). Closing the composer
+    // first makes the transition deterministic: composer down, settings up.
+    void (async () => {
+      await invoke("cancel_composer");
+      await invoke("show_main_window_command");
+    })();
   };
 
   // Undo/redo: move the revision pointer and restore the target revision's text
