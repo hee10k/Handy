@@ -11,6 +11,9 @@ const APPLE_PROVIDER_ID = "apple_intelligence";
 // The compact thinking depths most reasoning models expose (mirrors
 // llm_client::REASONING_LEVELS). Used as both option values and raw labels.
 const reasoningLevels = ["low", "medium", "high", "max"];
+// Values the UI accepts for the reasoning dropdown: "none" (off), a depth, or
+// "" (unset/auto). Mirrors backend REASONING_LEVELS.
+const loadableEfforts = ["none", ...reasoningLevels];
 
 type TransformProviderSettingsState = {
   providerOptions: DropdownOption[];
@@ -115,9 +118,9 @@ export const useTransformProviderSettings =
 
     const [reasoningEffort, setReasoningEffort] = useState("");
 
-  // Load the effective reasoning level for the selected provider (raw invoke so
+  // Load the stored reasoning level for the selected provider (raw invoke so
   // we stay decoupled from the generated bindings type for the new setting).
-  // A disable/off value (e.g. the legacy custom default) renders as "auto".
+  // Values: "" (unset/auto), "none" (thinking off), or one of REASONING_LEVELS.
   useEffect(() => {
     let disposed = false;
     void invoke<string | null>("get_transform_reasoning_effort", {
@@ -126,7 +129,7 @@ export const useTransformProviderSettings =
       .then((value) => {
         if (!disposed) {
           setReasoningEffort(
-            value && reasoningLevels.includes(value) ? value : "",
+            value && loadableEfforts.includes(value) ? value : "",
           );
         }
       })
@@ -154,7 +157,7 @@ export const useTransformProviderSettings =
             providerId: selectedProviderId,
           }).then((stored) =>
             setReasoningEffort(
-              stored && reasoningLevels.includes(stored) ? stored : "",
+              stored && loadableEfforts.includes(stored) ? stored : "",
             ),
           );
         });

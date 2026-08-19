@@ -62,9 +62,10 @@ impl ReasoningParams {
 /// the request is retried without it (see `send_chat_completion_with_schema`).
 fn reasoning_disable_params(provider: &PostProcessProvider) -> ReasoningParams {
     let base_url = provider.base_url.to_lowercase();
-    if base_url.contains("api.deepseek.com") {
-        // DeepSeek rejects reasoning_effort "none" and uses its own field:
-        // https://api-docs.deepseek.com/guides/thinking_mode
+    if base_url.contains("api.deepseek.com") || base_url.contains("maas.aliyuncs.com") {
+        // DeepSeek and Alibaba Model Studio (token-plan) reject
+        // reasoning_effort "none" and use their own `thinking` field to turn
+        // reasoning off: https://api-docs.deepseek.com/guides/thinking_mode
         ReasoningParams {
             thinking: Some(serde_json::json!({ "type": "disabled" })),
             ..Default::default()
@@ -87,11 +88,10 @@ fn reasoning_disable_params(provider: &PostProcessProvider) -> ReasoningParams {
     }
 }
 
-/// Reasoning/thinking levels a provider model may be asked for. These match the
-/// compact depth set most reasoning models expose. `none` (disabling thinking)
-/// is still understood internally as the compose-away default, but is not an
-/// offered level.
-pub const REASONING_LEVELS: &[&str] = &["low", "medium", "high", "max"];
+/// Reasoning/thinking settings a provider may be assigned: `none` turns
+/// thinking off (endpoint-appropriate field; on DeepSeek/Alibaba Model Studio
+/// it uses `thinking.type: disabled`), the rest are depth levels.
+pub const REASONING_LEVELS: &[&str] = &["none", "low", "medium", "high", "max"];
 
 /// True when an effort value means "disable reasoning" rather than a depth.
 fn is_disable_effort(level: &str) -> bool {
@@ -1008,6 +1008,17 @@ mod tests {
     }
 
     #[test]
+    fn alibaba_maas_base_url_uses_thinking_disabled() {
+        let params = reasoning_disable_params(&provider(
+            "custom",
+            "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+        ));
+        let json = request_json(params);
+        assert!(json.get("reasoning_effort").is_none());
+        assert!(json.get("reasoning").is_none());
+        assert_eq!(json["thinking"]["type"], "disabled");
+    }
+
     #[test]
     fn reasoning_level_custom_uses_top_level_reasoning_effort() {
         let params = reasoning_params(&provider("custom", "https://token-plan.example/v1"), "high");

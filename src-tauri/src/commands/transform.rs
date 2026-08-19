@@ -123,7 +123,10 @@ pub fn get_transform_reasoning_effort(
     provider_id: String,
 ) -> Result<Option<String>, String> {
     let settings = get_settings(&app);
-    Ok(settings.reasoning_effort_for(&provider_id))
+    // Return the raw stored value (None when unset), not the baseline-adjusted
+    // effective value, so the UI can distinguish an explicit "off" from the
+    // inherited default.
+    Ok(settings.post_process_reasoning_effort.get(&provider_id).cloned())
 }
 
 /// Persist the reasoning/thinking level for a provider's transform requests.

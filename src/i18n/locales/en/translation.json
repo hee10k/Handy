@@ -648,9 +648,10 @@
           "refreshModels": "Refresh models"
         },
         "reasoning": {
+          "auto": "Auto (provider default)",
+          "off": "Off (no thinking)",
           "title": "Thinking level",
           "description": "How much the model may reason before replying. Off skips thinking; higher levels spend more time and tokens reasoning.",
-          "auto": "Auto (provider default)",
           "placeholder": "Select thinking level"
         }
       },

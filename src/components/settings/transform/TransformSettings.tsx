@@ -152,6 +152,10 @@ const TransformProviderConfig: React.FC = () => {
               value={state.reasoningEffort}
               options={[
                 { value: "", label: t("settings.transform.provider.reasoning.auto") },
+                {
+                  value: "none",
+                  label: t("settings.transform.provider.reasoning.off"),
+                },
                 ...state.reasoningLevels.map((level) => ({
                   value: level,
                   // The model's own API level tokens need no translation.
