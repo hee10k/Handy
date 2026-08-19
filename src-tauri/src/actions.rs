@@ -908,7 +908,7 @@ struct TestAction;
 impl ShortcutAction for TestAction {
     fn start(&self, app: &AppHandle, binding_id: &str, shortcut_str: &str) {
         log::info!(
-            "Shortcut ID '{}': Started - {} (App: {})", // Changed "Pressed" to "Started" for consistency
+            "Shortcut ID '{}': Started - {} (App: {})", // Changed "Started" to "Pressed" for consistency
             binding_id,
             shortcut_str,
             app.package_info().name
@@ -922,6 +922,21 @@ impl ShortcutAction for TestAction {
             shortcut_str,
             app.package_info().name
         );
+    }
+}
+
+// Composer Action: opens the always-on-top typing window (컴포저) on hotkey
+// press. The commit loop (restore focus → paste → restore clipboard) is handled
+// by commands::composer once the user submits from the composer webview.
+struct ComposerAction;
+
+impl ShortcutAction for ComposerAction {
+    fn start(&self, app: &AppHandle, _binding_id: &str, _shortcut_str: &str) {
+        crate::commands::composer::open_composer(app.clone());
+    }
+
+    fn stop(&self, _app: &AppHandle, _binding_id: &str, _shortcut_str: &str) {
+        // Nothing to do on release for the composer.
     }
 }
 
@@ -945,6 +960,10 @@ pub static ACTION_MAP: Lazy<HashMap<String, Arc<dyn ShortcutAction>>> = Lazy::ne
     map.insert(
         "test".to_string(),
         Arc::new(TestAction) as Arc<dyn ShortcutAction>,
+    );
+    map.insert(
+        "composer_open".to_string(),
+        Arc::new(ComposerAction) as Arc<dyn ShortcutAction>,
     );
     map
 });

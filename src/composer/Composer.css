@@ -1,0 +1,110 @@
+.composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 12px;
+  overflow: hidden;
+  background: linear-gradient(180deg, #1c1c1e 0%, #141416 100%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  color: #f2f2f7;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.composer__glow {
+  position: absolute;
+  top: -40px;
+  left: 50%;
+  width: 220px;
+  height: 80px;
+  transform: translateX(-50%);
+  background: radial-gradient(
+    closest-side,
+    rgba(0, 122, 255, 0.28),
+    transparent
+  );
+  transition: opacity 200ms ease;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.composer.composer--composing .composer__glow {
+  opacity: 1;
+}
+
+.composer__input {
+  flex: 1 1 auto;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 0;
+  padding: 10px 12px;
+  resize: none;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.4;
+  caret-color: #0a84ff;
+}
+
+.composer__input::placeholder {
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.composer__input:focus {
+  border-color: rgba(10, 132, 255, 0.7);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.composer__hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 16px;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.2px;
+  color: rgba(255, 255, 255, 0.55);
+  user-select: none;
+}
+
+.composer__keys {
+  white-space: nowrap;
+}
+
+.composer__keys:last-child {
+  margin-left: auto;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.composer__status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+  transition: background 150ms ease;
+}
+
+.composer--composing .composer__status {
+  background: #30d158;
+  animation: compose-pulse 1s ease-in-out infinite;
+}
+
+@keyframes compose-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}

@@ -873,6 +873,19 @@ pub fn get_default_settings() -> AppSettings {
             current_binding: "escape".to_string(),
         },
     );
+    // 컴포저 hotkey — non-conflicting modifier combo (Ctrl+Alt+Space) on every
+    // platform so it never collides with transcribe (Ctrl/Cmd+Space) or the
+    // post-process default.
+    bindings.insert(
+        "composer_open".to_string(),
+        ShortcutBinding {
+            id: "composer_open".to_string(),
+            name: "Open Composer".to_string(),
+            description: "Opens the always-on-top typing window (컴포저).".to_string(),
+            default_binding: "ctrl+alt+space".to_string(),
+            current_binding: "ctrl+alt+space".to_string(),
+        },
+    );
 
     AppSettings {
         settings_schema_version: default_settings_schema_version(),
