@@ -196,6 +196,20 @@
   color: rgba(255, 255, 255, 0.38);
 }
 
+.composer__saved-instruction {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 159, 10, 0.3);
+  border-radius: 8px;
+  outline: none;
+  background: rgba(20, 20, 22, 0.9);
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+}
+
 /* ticket 05: 원문↔결과 diff 패널 + undo/redo/diff 액션 버튼 */
 .composer__diff {
   flex: 0 0 auto;

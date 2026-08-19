@@ -952,6 +952,10 @@ pub fn run(cli_args: CliArgs) {
 
             initialize_core_logic(&app_handle);
 
+            // One-way settings→keyring API-key migration (no-op unless the
+            // `keyring-store` feature is enabled — see secret.rs).
+            crate::secret::migrate_keys_to_keyring(&app_handle);
+
             // Secure Input monitor (macOS): detects stuck secure input that
             // silently blocks keyed shortcuts, warns the user, and activates
             // the Carbon fallback. See secure_input.rs and issue #1578.

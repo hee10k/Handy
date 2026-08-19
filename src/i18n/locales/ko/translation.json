@@ -627,7 +627,7 @@
         "title": "제공자",
         "description": "입력한 텍스트 변환에 사용할 AI 제공자를 선택합니다.",
         "appleIntelligence": {
-          "unavailable": "이 기기에서 Apple Intelligence를 사용할 수 없습니다. Apple Silicon Mac과 macOS Tahoe(26.0) 이상이 필요합니다."
+          "unsupported": "타자기 변환에서는 Apple Intelligence를 지원하지 않습니다. (스트리밍 변환을 실행할 수 없으므로 모든 변환이 실패합니다.) 아래에서 다른 제공자를 선택하세요."
         },
         "baseUrl": {
           "title": "기본 URL",
@@ -729,5 +729,25 @@
     "learnMore": "해결 방법",
     "recorderBlocked": "지금은 단축키를 등록할 수 없습니다. macOS Secure Input이 키 이벤트를 차단하고 있습니다. Secure Input 경고를 먼저 해결하세요.",
     "dismiss": "닫기"
+  },
+  "composer": {
+    "inputPlaceholder": "타자기 컴포저 — 입력 후 변환 모드를 고르거나 Enter로 붙여넣기",
+    "instructionPlaceholder": "지시 입력 후 Enter — 예: 두 문장으로 요약해 줘",
+    "savedInstructionPlaceholder": "저장된 지시문 선택…",
+    "savedInstructionLabel": "저장된 지시문",
+    "diffEmpty": "변환 전이라 원문과 같습니다",
+    "stateStreaming": "변환 중 · Esc로 취소",
+    "stateComposing": "조합 중",
+    "stateIdle": "Enter 커밋 · Esc 취소",
+    "modesAriaLabel": "변환 모드",
+    "diffAriaLabel": "diff",
+    "undoTitle": "실행 취소 (⌘Z)",
+    "undoAria": "실행 취소",
+    "redoTitle": "다시 실행 (⇧⌘Z)",
+    "redoAria": "다시 실행",
+    "diffTitle": "원문 v0 ↔ 현재 결과 diff",
+    "diffAria": "원문 비교",
+    "cancel": "취소",
+    "keysHint": "Shift+Enter 줄바꿈"
   }
 }

@@ -19,6 +19,19 @@ incremental = true # Compile your binary in smaller steps.
 name = "handy_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Move provider API keys into the OS keyring (Keychain / Credential Manager).
+# Default-OFF: keeps cross-platform CI builds green and unentitled macOS dev
+# builds working without keychain entitlements. When enabled, API keys are
+# stored + read via keyring and one-way-migrated out of the settings file.
+# Packaged macOS releases should enable it and add `keychain-access-groups`
+# to the app entitlements.
+[features]
+default = []
+keyring-store = ["dep:keyring"]
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+keyring = { version = "3", optional = true, default-features = false, features = ["apple-native"] }
+
 # [[bin]]
 # name = "cli"
 # path = "src/audio_toolkit/bin/cli.rs"

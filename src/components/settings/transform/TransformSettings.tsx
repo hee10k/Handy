@@ -42,11 +42,9 @@ const TransformProviderConfig: React.FC = () => {
       </SettingContainer>
 
       {state.isAppleProvider ? (
-        state.appleIntelligenceUnavailable ? (
-          <Alert variant="error" contained>
-            {t("settings.transform.provider.appleIntelligence.unavailable")}
-          </Alert>
-        ) : null
+        <Alert variant="warning" contained>
+          {t("settings.transform.provider.appleIntelligence.unsupported")}
+        </Alert>
       ) : (
         <>
           {state.selectedProvider?.id === "custom" && (

@@ -20,7 +20,7 @@
 
 use crate::settings::{get_settings, write_settings};
 use crate::settings::SecretMap;
-use log::warn;
+use log::{info, warn};
 use std::collections::HashMap;
 use std::fmt;
 use tauri::AppHandle;
@@ -284,6 +284,31 @@ pub fn provider_ids_with_keys(app: &AppHandle) -> Vec<String> {
         .filter(|(_, v)| !v.trim().is_empty())
         .map(|(id, _)| id.clone())
         .collect()
+}
+
+/// One-way settings→keyring migration scheduled at startup. Non-blocking and
+/// a no-op on default builds (feature off → settings backend only), so it is
+/// safe to call unconditionally from startup. When `keyring-store` is enabled
+/// it moves any non-empty provider keys present in the settings SecretMap into
+/// the OS keyring and clears the plaintext copies; keys already in the keyring
+/// are left untouched (keyring is authoritative once populated).
+pub fn migrate_keys_to_keyring(app: &AppHandle) {
+    #[cfg(feature = "keyring-store")]
+    {
+        let provider_ids = provider_ids_with_keys(app);
+        if provider_ids.is_empty() {
+            return;
+        }
+        let app_for_task = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let source = SettingsApiKeyStore::new(app_for_task.clone());
+            let report = migrate_secret_map(&source, &KeyringApiKeyStore, &provider_ids);
+            info!(
+                "Migrated {} provider API key(s) to the OS keyring ({} skipped)",
+                report.migrated, report.skipped
+            );
+        });
+    }
 }
 
 #[cfg(test)]

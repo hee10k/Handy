@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { useTranslation } from "react-i18next";
 import "./Composer.css";
 import {
   canRedo,
@@ -20,6 +21,14 @@ interface TransformModeInfo {
   name: string;
   description: string;
   takes_instruction: boolean;
+}
+
+// A user's saved instruction (mirrors settings `post_process_prompts`), so the
+// Custom mode can pick a saved one instead of typing fresh (Spec-8).
+interface SavedInstruction {
+  id: string;
+  name: string;
+  prompt: string;
 }
 
 // Event payloads (ticket 03) — `transform-delta` / `transform-done` /
@@ -51,11 +60,13 @@ interface PendingTransform {
 // is composing, so those keys keep their IME meanings (confirm / cancel the
 // composition) instead of firing a commit or close mid-syllable.
 const Composer: React.FC = () => {
+  const { t } = useTranslation();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const instructionRef = useRef<HTMLInputElement>(null);
   const [text, setText] = useState("");
   const [originalText, setOriginalText] = useState(""); // pre-transform snapshot, restored on error/cancel
   const [modes, setModes] = useState<TransformModeInfo[]>([]);
+const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
   const [mode, setMode] = useState<string | null>(null);
   const [instruction, setInstruction] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -86,6 +97,22 @@ const Composer: React.FC = () => {
       })
       .catch(() => {
         // Selector stays empty; the composer remains usable as a plain input.
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  // Load the user's saved instructions (settings `post_process_prompts`) so the
+  // Custom mode can select one instead of typing fresh (Spec-8).
+  useEffect(() => {
+    let disposed = false;
+    void invoke<{ post_process_prompts?: SavedInstruction[] }>("get_app_settings")
+      .then((settings) => {
+        if (!disposed) setSavedPrompts(settings?.post_process_prompts ?? []);
+      })
+      .catch(() => {
+        // No saved prompts; the Custom mode falls back to inline typing.
       });
     return () => {
       disposed = true;
@@ -330,7 +357,7 @@ const Composer: React.FC = () => {
     >
       <div className="composer__glow" aria-hidden="true" />
       {modes.length > 0 && (
-        <div className="composer__modes" role="group" aria-label="transformation mode">
+        <div className="composer__modes" role="group" aria-label={t("composer.modesAriaLabel")}>
           {modes.map((m) => (
             <button
               key={m.id}
@@ -346,17 +373,36 @@ const Composer: React.FC = () => {
         </div>
       )}
       {mode === "custom" && (
-        <input
-          ref={instructionRef}
-          className="composer__instruction"
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          onKeyDown={handleInstructionKeyDown}
-          onCompositionStart={() => setIsComposing(true)}
-          onCompositionEnd={finalizeComposition}
-          placeholder={"지시 입력 후 Enter — 예: 두 문장으로 요약해 줘"}
-          spellCheck={false}
-        />
+        <>
+          {savedPrompts.length > 0 && (
+            <select
+              className="composer__saved-instruction"
+              value=""
+              onChange={(e) => {
+                if (e.target.value) setInstruction(e.target.value);
+              }}
+              aria-label={t("composer.savedInstructionLabel")}
+            >
+              <option value="">{t("composer.savedInstructionPlaceholder")}</option>
+              {savedPrompts.map((p) => (
+                <option key={p.id} value={p.prompt}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <input
+            ref={instructionRef}
+            className="composer__instruction"
+            value={instruction}
+            onChange={(e) => setInstruction(e.target.value)}
+            onKeyDown={handleInstructionKeyDown}
+            onCompositionStart={() => setIsComposing(true)}
+            onCompositionEnd={finalizeComposition}
+            placeholder={t("composer.instructionPlaceholder")}
+            spellCheck={false}
+          />
+        </>
       )}
       <textarea
         ref={textareaRef}
@@ -372,7 +418,7 @@ const Composer: React.FC = () => {
         onKeyDown={handleKeyDown}
         onCompositionStart={() => setIsComposing(true)}
         onCompositionEnd={finalizeComposition}
-        placeholder={"타자기 컴포저 — 입력 후 변환 모드를 고르거나 Enter로 붙여넣기"}
+        placeholder={t("composer.inputPlaceholder")}
         autoFocus
         readOnly={streaming}
         spellCheck={false}
@@ -381,7 +427,7 @@ const Composer: React.FC = () => {
         <div className="composer__diff" role="region" aria-label="diff">
           <div className="composer__diff-body">
             {diffSegments.length === 0 ? (
-              <span className="composer__diff-empty">{"변환 전이라 원문과 같습니다"}</span>
+              <span className="composer__diff-empty">{t("composer.diffEmpty")}</span>
             ) : (
               diffSegments.map((seg, idx) => (
                 <span
@@ -399,12 +445,12 @@ const Composer: React.FC = () => {
         <span className={statusClass} />
         <span className="composer__state">
           {streaming
-            ? "변환 중 · Esc로 취소"
+            ? t("composer.stateStreaming")
             : error
               ? error
               : isComposing
-                ? "조합 중"
-                : "Enter 커밋 · Esc 취소"}
+                ? t("composer.stateComposing")
+                : t("composer.stateIdle")}
         </span>
         {!streaming && revisionState.revisions.length > 0 && (
           <span className="composer__actions">
@@ -413,8 +459,8 @@ const Composer: React.FC = () => {
               className="composer__action"
               onClick={undo}
               disabled={!canUndo(revisionState)}
-              title="실행 취소 (⌘Z)"
-              aria-label={"실행 취소"}
+              title={t("composer.undoTitle")}
+              aria-label={t("composer.undoAria")}
             >
               {"↶"}
             </button>
@@ -423,8 +469,8 @@ const Composer: React.FC = () => {
               className="composer__action"
               onClick={redo}
               disabled={!canRedo(revisionState)}
-              title="다시 실행 (⇧⌘Z)"
-              aria-label={"다시 실행"}
+              title={t("composer.redoTitle")}
+              aria-label={t("composer.redoAria")}
             >
               {"↷"}
             </button>
@@ -432,8 +478,8 @@ const Composer: React.FC = () => {
               type="button"
               className={`composer__action ${showDiff ? "composer__action--active" : ""}`}
               onClick={() => setShowDiff((v) => !v)}
-              title="원문 v0 ↔ 현재 결과 diff"
-              aria-label={"원문 비교"}
+              title={t("composer.diffTitle")}
+              aria-label={t("composer.diffAria")}
             >
               {"Δ"}
             </button>
@@ -441,11 +487,11 @@ const Composer: React.FC = () => {
         )}
         {streaming && (
           <button type="button" className="composer__cancel" onClick={cancelInFlight}>
-            {"취소"}
+            {t("composer.cancel")}
           </button>
         )}
         {!streaming && (
-          <span className="composer__keys">{"Shift+Enter 줄바꿈"}</span>
+          <span className="composer__keys">{t("composer.keysHint")}</span>
         )}
       </div>
     </div>

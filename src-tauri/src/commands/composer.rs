@@ -18,10 +18,12 @@
 //! **Esc / empty-commit** cancel with no side effects: the composer closes,
 //! focus returns, and the clipboard is never touched.
 
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use log::{debug, error, warn};
 use tauri::{AppHandle, Emitter, Manager};
+
+use crate::managers::history::HistoryManager;
 
 /// Window label for the composer webview. Also must be listed in
 /// `capabilities/default.json` so the webview may invoke commands / listen.
@@ -290,12 +292,63 @@ fn should_commit(text: &str) -> bool {
     !text.trim().is_empty()
 }
 
+/// Map a committed composer session onto the existing transcription-history
+/// schema (Spec-18 / Implementation Decision "reuse 전사 히스토리 저장소").
+///
+/// The composer pastes its final `text` (the "to"). When a transform rewrote
+/// the draft, `original` is the pre-transform snapshot (the "from"); otherwise
+/// the committed text is also the origin. Returns the row fields in the same
+/// order as `HistoryManager::save_entry`, so a committed composer session is
+/// recorded with the same `HistoryEntry` shape as a transcription and pings
+/// the same real-time listeners — without disturbing the transcription UI
+/// (the origin lands in `transcription_text`, the transformed output — if any —
+/// in `post_processed_text`, mirroring the transcription store's semantics).
+fn composer_history_fields(
+    text: &str,
+    original: Option<&str>,
+    mode: Option<&str>,
+) -> (String, String, bool, Option<String>, Option<String>) {
+    let transformed = original
+        .map(|o| o.trim() != text.trim())
+        .unwrap_or(false);
+    let transcription_text = original.unwrap_or(text).to_string();
+    let post_processed_text = transformed.then(|| text.to_string());
+    (
+        "composer".to_string(),            // file_name: composer sessions have no audio recording
+        transcription_text,                // "from"
+        transformed,                       // post_process_requested
+        post_processed_text,               // "to"
+        mode.map(str::to_string),          // post_process_prompt
+    )
+}
+
 #[tauri::command]
 #[specta::specta]
-pub fn commit_composer(app: AppHandle, text: String) -> Result<(), String> {
+pub fn commit_composer(
+    app: AppHandle,
+    text: String,
+    original: Option<String>,
+    mode: Option<String>,
+) -> Result<(), String> {
     if !should_commit(&text) {
         let _ = cancel_composer(app);
         return Ok(());
+    }
+
+    // Record the committed composer session in the existing transcription
+    // history store (Spec-18). Reuses HistoryManager::save_entry so the row
+    // matches the HistoryEntry schema, emits the real-time history-updated
+    // event, and keeps history-limit/cleanup behavior identical. `original` /
+    // `mode` are optional: the current composer webview only sends `text`, and
+    // once it also sends the pre-transform snapshot a rewrite is captured as
+    // from→to. A recording failure is logged but never blocks the paste.
+    let (file_name, transcription_text, requested, post_processed, prompt) =
+        composer_history_fields(&text, original.as_deref(), mode.as_deref());
+    if let Err(e) = app
+        .state::<Arc<HistoryManager>>()
+        .save_entry(file_name, transcription_text, requested, post_processed, prompt)
+    {
+        error!("Failed to record composer commit in history: {e}");
     }
 
     let focus = take_captured_focus();
@@ -374,7 +427,7 @@ pub fn cancel_composer(app: AppHandle) -> Result<(), String> {
 }
 #[cfg(test)]
 mod tests {
-    use super::should_commit;
+    use super::{composer_history_fields, should_commit};
 
     #[test]
     fn empty_and_whitespace_text_never_commits() {
@@ -389,5 +442,38 @@ mod tests {
         assert!(should_commit("안녕하세요"));
         assert!(should_commit("  hello world  "));
         assert!(should_commit("한\n글"));
+    }
+
+    #[test]
+    fn composer_history_fields_plain_commit_is_the_source() {
+        // No transform (no `original`): the committed text is both origin and
+        // final; nothing marked as post-processed so the transcription UI is
+        // untouched.
+        let (file_name, from, requested, to, prompt) =
+            composer_history_fields("안녕하세요", None, None);
+        assert_eq!(file_name, "composer");
+        assert_eq!(from, "안녕하세요");
+        assert!(!requested);
+        assert_eq!(to, None);
+        assert_eq!(prompt, None);
+    }
+
+    #[test]
+    fn composer_history_fields_transform_captures_from_to() {
+        let (file_name, from, requested, to, prompt) =
+            composer_history_fields("polished text", Some("raw draft"), Some("polish"));
+        assert_eq!(file_name, "composer");
+        assert_eq!(from, "raw draft");
+        assert!(requested);
+        assert_eq!(to, Some("polished text".to_string()));
+        assert_eq!(prompt, Some("polish".to_string()));
+    }
+
+    #[test]
+    fn composer_history_fields_identical_original_is_not_a_transform() {
+        let (_, _, requested, to, _) =
+            composer_history_fields("same", Some("same"), Some("polish"));
+        assert!(!requested);
+        assert_eq!(to, None);
     }
 }

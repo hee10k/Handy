@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettings } from "../../../hooks/useSettings";
 import { useSettingsStore } from "../../../stores/settingsStore";
@@ -13,8 +13,10 @@ type TransformProviderSettingsState = {
   selectedProviderId: string;
   selectedProvider: PostProcessProvider | undefined;
   isCustomProvider: boolean;
+  // True only when the persisted transform provider is Apple Intelligence,
+  // which run_transform rejects (no streaming). It is excluded from the
+  // selectable options; this flag drives the explanatory notice instead.
   isAppleProvider: boolean;
-  appleIntelligenceUnavailable: boolean;
   baseUrl: string;
   handleBaseUrlChange: (value: string) => void;
   isBaseUrlUpdating: boolean;
@@ -54,8 +56,6 @@ export const useTransformProviderSettings =
     const setPostProcessModelOptions = useSettingsStore(
       (state) => state.setPostProcessModelOptions,
     );
-    const [appleIntelligenceUnavailable, setAppleIntelligenceUnavailable] =
-      useState(false);
 
     // Settings are guaranteed to have providers after migration
     const providers = settings?.post_process_providers || [];
@@ -78,11 +78,16 @@ export const useTransformProviderSettings =
     const apiKey = settings?.post_process_api_keys?.[selectedProviderId] ?? "";
     const model = settings?.post_process_models?.[selectedProviderId] ?? "";
 
+    // Apple Intelligence is excluded from the transform provider selector:
+    // run_transform deterministically rejects it ("does not support streaming
+    // transform yet"), so selecting it would make every transform fail.
     const providerOptions = useMemo<DropdownOption[]>(() => {
-      return providers.map((provider) => ({
-        value: provider.id,
-        label: provider.label,
-      }));
+      return providers
+        .filter((provider) => provider.id !== APPLE_PROVIDER_ID)
+        .map((provider) => ({
+          value: provider.id,
+          label: provider.label,
+        }));
     }, [providers]);
 
     const fetchTransformModels = useCallback(
@@ -101,15 +106,8 @@ export const useTransformProviderSettings =
 
     const handleProviderSelect = useCallback(
       async (providerId: string) => {
-        setAppleIntelligenceUnavailable(false);
         if (providerId === selectedProviderId) return;
-
-        if (providerId === APPLE_PROVIDER_ID) {
-          const available = await invoke<boolean>(
-            "check_apple_intelligence_available",
-          ).catch(() => false);
-          if (!available) setAppleIntelligenceUnavailable(true);
-        }
+        if (providerId === APPLE_PROVIDER_ID) return; // never selectable (see providerOptions)
 
         await invoke("set_transform_provider", { providerId });
         await refreshSettings();
@@ -262,7 +260,6 @@ export const useTransformProviderSettings =
       selectedProvider,
       isCustomProvider,
       isAppleProvider,
-      appleIntelligenceUnavailable,
       baseUrl,
       handleBaseUrlChange,
       isBaseUrlUpdating,
