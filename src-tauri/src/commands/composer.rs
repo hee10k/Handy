@@ -27,10 +27,11 @@ use tauri::{AppHandle, Emitter, Manager};
 /// `capabilities/default.json` so the webview may invoke commands / listen.
 pub const COMPOSER_WINDOW_LABEL: &str = "composer";
 
-/// Native window size (logical points). Kept small and non-resizable for the
-/// POC; the `<textarea>` fills it.
+/// Native window size (logical points). Non-resizable; must fit the mode
+/// selector row (and, in Custom mode, the instruction input) above the
+/// `<textarea>`, so it is taller than the ticket-02-only build.
 const COMPOSER_WIDTH: f64 = 540.0;
-const COMPOSER_HEIGHT: f64 = 168.0;
+const COMPOSER_HEIGHT: f64 = 340.0;
 
 /// The window that owned foreground focus right before the composer opened.
 /// Stored as a plain integer so the value is `Send + Sync` for the static.

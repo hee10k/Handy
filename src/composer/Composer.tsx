@@ -1,7 +1,41 @@
 import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import "./Composer.css";
+
+// Transform mode metadata, mirroring the backend `TransformModeInfo` (ticket 03).
+// We read it from `list_transform_modes` so the selector never hardcodes modes;
+// raw `invoke` keeps us decoupled from the generated `src/bindings.ts`.
+interface TransformModeInfo {
+  id: string;
+  name: string;
+  description: string;
+  takes_instruction: boolean;
+}
+
+// Event payloads (ticket 03) — `transform-delta` / `transform-done` /
+// `transform-error` are emitted by `transform::run_transform`.
+interface TransformDeltaPayload {
+  delta: string;
+  mode: string;
+}
+interface TransformDonePayload {
+  text: string;
+  mode: string;
+}
+interface TransformErrorPayload {
+  error: string;
+  category: string;
+  mode: string;
+}
+
+// A transform that was requested while the OS IME was still composing. It must
+// wait for `compositionend` (which commits the final syllable into the DOM)
+// before it snapshots text, so no partially-composed input is lost.
+interface PendingTransform {
+  mode: string;
+  instruction: string;
+}
 
 // IME input (한글 조합) must reach the textarea untouched. Our own hotkeys
 // (Enter = commit, Esc = cancel) are deliberately suppressed while the OS IME
@@ -9,24 +43,172 @@ import "./Composer.css";
 // composition) instead of firing a commit or close mid-syllable.
 const Composer: React.FC = () => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const instructionRef = useRef<HTMLInputElement>(null);
   const [text, setText] = useState("");
+  const [originalText, setOriginalText] = useState(""); // pre-transform snapshot, restored on error/cancel
+  const [modes, setModes] = useState<TransformModeInfo[]>([]);
+  const [mode, setMode] = useState<string | null>(null);
+  const [instruction, setInstruction] = useState("");
+  const [streaming, setStreaming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [isComposing, setIsComposing] = useState(false);
 
-  // Each time the backend opens the composer it emits "composer-open": clear
-  // the previous draft and focus the textarea so the user can immediately type.
+  // Refs for values the mount-once event listeners must read without stale
+  // closures. `streaming` guards against stray deltas after done/error/cancel;
+  // `originalText` is the stable pre-transform snapshot to restore on failure;
+  // `mode` marks the transform that generated the current stream.
+  const streamingRef = useRef(false);
+  const originalTextRef = useRef("");
+  const modeRef = useRef<string | null>(null);
+  const pendingTransformRef = useRef<PendingTransform | null>(null);
+
+  // Load the transform modes from the backend (ticket 03 command).
   useEffect(() => {
     let disposed = false;
-    void listen("composer-open", () => {
-      if (disposed) return;
-      setText("");
-      requestAnimationFrame(() => {
-        textareaRef.current?.focus();
+    void invoke<TransformModeInfo[]>("list_transform_modes")
+      .then((m) => {
+        if (!disposed) setModes(m);
+      })
+      .catch(() => {
+        // Selector stays empty; the composer remains usable as a plain input.
       });
-    });
     return () => {
       disposed = true;
     };
   }, []);
+
+  // Mount-once listeners for the backend streaming events and the open signal.
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: UnlistenFn[] = [];
+    void (async () => {
+      const [onDelta, onDone, onError, onOpen] = await Promise.all([
+        listen<TransformDeltaPayload>("transform-delta", (e) => {
+          if (disposed || !streamingRef.current) return;
+          setText((t) => t + e.payload.delta);
+        }),
+        listen<TransformDonePayload>("transform-done", (e) => {
+          if (disposed || !streamingRef.current || e.payload.mode !== modeRef.current) return;
+          streamingRef.current = false;
+          setStreaming(false);
+          setError(null);
+          setText(e.payload.text); // authoritative final result, now editable
+        }),
+        listen<TransformErrorPayload>("transform-error", (e) => {
+          if (disposed || e.payload.mode !== modeRef.current) return;
+          streamingRef.current = false;
+          setStreaming(false);
+          setText(originalTextRef.current); // never lose the typed text
+          setError(e.payload.error);
+        }),
+        listen("composer-open", () => {
+          if (disposed) return;
+          // Fresh draft: cancel any in-flight transform, clear all state, focus.
+          void invoke("cancel_transform");
+          streamingRef.current = false;
+          pendingTransformRef.current = null;
+          modeRef.current = null;
+          setText("");
+          setOriginalText("");
+          setMode(null);
+          setInstruction("");
+          setStreaming(false);
+          setError(null);
+          setIsComposing(false);
+          requestAnimationFrame(() => {
+            textareaRef.current?.focus();
+          });
+        }),
+      ]);
+      unlisteners.push(onDelta, onDone, onError, onOpen);
+    })();
+    return () => {
+      disposed = true;
+      for (const u of unlisteners) u();
+    };
+  }, []);
+
+  // Start a transform reading the *current* text directly from the textarea
+  // DOM element so any final IME-committed syllable is included. Snapshots the
+  // original text (to restore on failure/cancel) and clears the textarea to
+  // stream the fresh result into it.
+  const transformNow = (selectedMode: string, instr: string) => {
+    const el = textareaRef.current;
+    const value = (el?.value ?? text).trim();
+    if (value.length === 0) return; // empty/whitespace input is a no-op
+    const instructionArg = instr.trim();
+    if (selectedMode === "custom" && instructionArg.length === 0) return; // needs an instruction
+    originalTextRef.current = value;
+    setOriginalText(value);
+    modeRef.current = selectedMode;
+    streamingRef.current = true;
+    setStreaming(true);
+    setError(null);
+    setMode(selectedMode);
+    setText(""); // begin streaming the result fresh
+    const payload: { mode: string; text: string; instruction?: string } = {
+      mode: selectedMode,
+      text: value,
+    };
+    if (instructionArg.length > 0) payload.instruction = instructionArg;
+    void invoke("run_transform", payload).catch((err) => {
+      // Mid-stream errors already arrive as `transform-error` (handled above,
+      // which clears streamingRef). This catches pre-flight failures (no
+      // provider / model / key) that only reject the invoke.
+      if (!streamingRef.current) return;
+      streamingRef.current = false;
+      setStreaming(false);
+      setText(originalTextRef.current);
+      setError(String(err));
+    });
+  };
+
+  // Request a transform. If the IME is mid-composition, defer until
+  // `compositionend` so no syllable is dropped; otherwise run immediately.
+  const requestTransform = (selectedMode: string, instr: string) => {
+    if (isComposing) {
+      pendingTransformRef.current = { mode: selectedMode, instruction: instr };
+      return;
+    }
+    transformNow(selectedMode, instr);
+  };
+
+  const handleModeClick = (m: TransformModeInfo) => {
+    if (streaming) return; // selector is disabled mid-stream; defensive
+    if (m.takes_instruction) {
+      // Entering Custom: reveal the instruction input, transform on Enter.
+      setMode(m.id);
+      requestAnimationFrame(() => instructionRef.current?.focus());
+      return;
+    }
+    requestTransform(m.id, "");
+  };
+
+  const handleInstructionKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.nativeEvent.isComposing) return; // let the IME finalize the instruction
+    if (e.key === "Enter") {
+      e.preventDefault();
+      requestTransform("custom", instruction);
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (streaming) cancelInFlight();
+      else cancel();
+    }
+  };
+
+  const finalizeComposition = () => {
+    setIsComposing(false);
+    // Pull the final (IME-committed) value straight from the DOM so the last
+    // composed syllable is never dropped.
+    const el = textareaRef.current;
+    if (el) setText(el.value);
+    const pending = pendingTransformRef.current;
+    if (pending) {
+      pendingTransformRef.current = null;
+      transformNow(pending.mode, pending.instruction);
+    }
+  };
 
   const commit = () => {
     const value = text.trim();
@@ -35,7 +217,20 @@ const Composer: React.FC = () => {
       void invoke("cancel_composer");
       return;
     }
+    // Reuse the ticket-02 commit path: paste current textarea text at the
+    // previously-focused app's cursor, then restore the clipboard.
     void invoke("commit_composer", { text });
+  };
+
+  const cancelInFlight = () => {
+    // Cancel only this transform request; keep the composer open and restore
+    // the pre-transform text so nothing is pasted and nothing is lost.
+    void invoke("cancel_transform");
+    streamingRef.current = false;
+    pendingTransformRef.current = null;
+    setStreaming(false);
+    setError(null);
+    setText(originalTextRef.current);
   };
 
   const cancel = () => {
@@ -50,39 +245,93 @@ const Composer: React.FC = () => {
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
+      if (streaming) return; // never commit a partial stream
       commit();
       return;
     }
     if (e.key === "Escape") {
       e.preventDefault();
-      cancel();
+      if (streaming) cancelInFlight(); // Esc cancels only the in-flight request
+      else cancel(); // nothing streaming: close the composer (ticket-02 path)
     }
   };
 
+  const statusClass = [
+    "composer__status",
+    streaming ? "composer__status--streaming" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
     <div
-      className={`composer ${isComposing ? "composer--composing" : ""}`}
+      className={`composer ${isComposing ? "composer--composing" : ""} ${streaming ? "composer--streaming" : ""}`}
       onClick={() => textareaRef.current?.focus()}
     >
       <div className="composer__glow" aria-hidden="true" />
+      {modes.length > 0 && (
+        <div className="composer__modes" role="group" aria-label="transformation mode">
+          {modes.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              className={`composer__mode ${mode === m.id ? "composer__mode--active" : ""}`}
+              title={m.description}
+              disabled={streaming}
+              onClick={() => handleModeClick(m)}
+            >
+              {m.name}
+            </button>
+          ))}
+        </div>
+      )}
+      {mode === "custom" && (
+        <input
+          ref={instructionRef}
+          className="composer__instruction"
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          onKeyDown={handleInstructionKeyDown}
+          onCompositionStart={() => setIsComposing(true)}
+          onCompositionEnd={finalizeComposition}
+          placeholder={"지시 입력 후 Enter — 예: 두 문장으로 요약해 줘"}
+          spellCheck={false}
+        />
+      )}
       <textarea
         ref={textareaRef}
         className="composer__input"
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          if (!streaming) setText(e.target.value);
+        }}
         onKeyDown={handleKeyDown}
         onCompositionStart={() => setIsComposing(true)}
-        onCompositionEnd={() => setIsComposing(false)}
-        placeholder="타자기 컴포저 — 입력 후 Enter로 붙여넣기, Esc로 취소"
+        onCompositionEnd={finalizeComposition}
+        placeholder={"타자기 컴포저 — 입력 후 변환 모드를 고르거나 Enter로 붙여넣기"}
         autoFocus
+        readOnly={streaming}
         spellCheck={false}
       />
       <div className="composer__hint">
-        <span className="composer__status" />
-        <span className="composer__keys">
-          {isComposing ? "조합 중" : "Enter 커밋 · Esc 취소"}
+        <span className={statusClass} />
+        <span className="composer__state">
+          {streaming
+            ? "변환 중 · Esc로 취소"
+            : error
+              ? error
+              : isComposing
+                ? "조합 중"
+                : "Enter 커밋 · Esc 취소"}
         </span>
-        <span className="composer__keys">{"Shift+Enter 줄바꿈"}</span>
+        {streaming && (
+          <button type="button" className="composer__cancel" onClick={cancelInFlight}>
+            {"취소"}
+          </button>
+        )}
+        {!streaming && (
+          <span className="composer__keys">{"Shift+Enter 줄바꿈"}</span>
+        )}
       </div>
     </div>
   );
