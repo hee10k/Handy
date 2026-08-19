@@ -20,7 +20,7 @@
 
 use std::sync::{LazyLock, Mutex};
 
-use log::{debug, error};
+use log::{debug, error, warn};
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Window label for the composer webview. Also must be listed in
@@ -103,6 +103,11 @@ mod platform {
             let _ = BringWindowToTop(hwnd);
         }
     }
+
+    /// Windows key-window enforcement is handled by tauri's `set_focus()` +
+    /// `SetForegroundWindow`, so this is a no-op placeholder for the shared
+    /// open path.
+    pub(super) fn ensure_key_window(_window: &tauri::WebviewWindow) {}
 }
 
 /// macOS: capture the frontmost running application and reactivate it.
@@ -110,7 +115,8 @@ mod platform {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::CapturedFocus;
-    use log::debug;
+    use log::{debug, warn};
+    use objc2::msg_send;
     use objc2_app_kit::{
         NSApplicationActivationOptions, NSRunningApplication, NSWorkspace,
     };
@@ -141,6 +147,44 @@ mod platform {
         };
         let _ = app.activateWithOptions(NSApplicationActivationOptions::empty());
     }
+
+    /// Enforce that the composer is a key window on macOS so the keyboard IME
+    /// (한글/영문 조합) routes into the webview reliably. The composer is a
+    /// *normal* `NSWindow` (ticket 02), not the recording `NSPanel` which is
+    /// intentionally `canBecomeKeyWindow: false`. A plain `NSWindow` already
+    /// answers `canBecomeKeyWindow == YES` and tao's `set_focus` calls
+    /// `makeKeyAndOrderFront:` + `activateIgnoringOtherApps:`, so this is a
+    /// verification + last-resort push rather than the primary path.
+    ///
+    /// It reads the live `canBecomeKeyWindow` / `isKeyWindow` state and, if for
+    /// any reason the window never took key (e.g. the accessory tray app is not
+    /// active when the hotkey fires), forces it key again. Must run on the main
+    /// thread.
+    pub(super) fn ensure_key_window(window: &tauri::WebviewWindow) {
+        // `WebviewWindow::ns_window()` (macOS) returns the AppKit NSWindow.
+        let Ok(ns_window) = window.ns_window() else {
+            warn!("Composer: could not resolve the native NSWindow to verify key status");
+            return;
+        };
+        // SAFETY: ns_window() yields a live, retained NSWindow pointer valid for
+        // the lifetime of this call; we only send idempotent leaf messages and
+        // never transfer or release ownership.
+        let win = ns_window as *mut objc2::runtime::NSObject;
+        let can_become_key: bool = unsafe { msg_send![win, canBecomeKeyWindow] };
+        let is_key: bool = unsafe { msg_send![win, isKeyWindow] };
+        debug!(
+            "Composer key-window check: canBecomeKeyWindow={can_become_key} isKeyWindow={is_key}"
+        );
+        if !is_key {
+            // Make it key (and front) once more; a no-op if it just became key.
+            let (): () = unsafe {
+                msg_send![
+                    win,
+                    makeKeyAndOrderFront: std::ptr::null_mut::<objc2::runtime::NSObject>()
+                ]
+            };
+        }
+    }
 }
 
 /// No focus management on unsupported platforms: the composer is hidden and
@@ -155,6 +199,8 @@ mod platform {
     }
 
     pub(super) fn restore_focus(_app: &AppHandle, _focus: &CapturedFocus) {}
+
+    pub(super) fn ensure_key_window(_window: &tauri::WebviewWindow) {}
 }
 
 // ============================================================================
@@ -212,6 +258,10 @@ pub fn open_composer(app_handle: AppHandle) {
             let _ = window.center();
             let _ = window.show();
             let _ = window.set_focus();
+            // macOS: verify the composer actually became the key window (for
+            // 한글 IME composition) and push it key if it did not.
+            #[cfg(target_os = "macos")]
+            platform::ensure_key_window(&window);
             // The webview clears the previous draft and focuses its <textarea>.
             let _ = app_handle.emit_to(COMPOSER_WINDOW_LABEL, "composer-open", ());
         } else {
@@ -250,6 +300,19 @@ pub fn commit_composer(app: AppHandle, text: String) -> Result<(), String> {
 
     let focus = take_captured_focus();
 
+    // Secure Input (secure_input.rs) blocks *synthetic* keystrokes from being
+    // read/applied in many apps, so the injected Cmd+V chord may be ignored.
+    // The composer's own typing (normal user IME input) is never blocked, so
+    // the commit is still attempted — but we surface the condition for the
+    // logs and rely on the paste path's guaranteed clipboard restore + graceful
+    // error handling (the exact behavior Handy's existing secure-input path
+    // inherits) rather than failing silently or touching the clipboard early.
+    // Cancellation (cancel_composer) is unaffected and always safe.
+    #[cfg(target_os = "macos")]
+    if crate::secure_input::is_enabled_now() {
+        warn!("Composer commit requested while Secure Input is active: the Cmd+V paste chord may be suppressed; clipboard restore is still guaranteed");
+    }
+
     // Hide the composer and hand focus back to the captured window before the
     // paste chord fires, so the chord lands in the original app at its cursor.
     let app_hide = app.clone();
@@ -266,9 +329,29 @@ pub fn commit_composer(app: AppHandle, text: String) -> Result<(), String> {
     std::thread::spawn(move || {
         // Give the focus handoff a moment to land before injecting keys.
         std::thread::sleep(std::time::Duration::from_millis(80));
-        match crate::clipboard::paste(text, app_paste) {
-            Ok(()) => debug!("Composer commit pasted"),
-            Err(e) => error!("Composer commit paste failed: {e}"),
+        // macOS: the paste path uses main-thread-only AppKit APIs — the
+        // layout-aware Cmd+V resolution (input.rs TIS APIs) and, when
+        // reliable_paste is on, the NSPasteboard promise (paste_tx/macos.rs).
+        // Keep the 80ms settle on this worker, then dispatch the paste onto
+        // the main thread exactly like the transcription paste path
+        // (actions.rs). `run_on_main_thread` runs inline when already on the
+        // main thread, so the non-macOS branch below is equivalent.
+        #[cfg(target_os = "macos")]
+        {
+            let app_for_main = app_paste.clone();
+            let _ = app_for_main.run_on_main_thread(move || {
+                match crate::clipboard::paste(text, app_paste) {
+                    Ok(()) => debug!("Composer commit pasted"),
+                    Err(e) => error!("Composer commit paste failed: {e}"),
+                }
+            });
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            match crate::clipboard::paste(text, app_paste) {
+                Ok(()) => debug!("Composer commit pasted"),
+                Err(e) => error!("Composer commit paste failed: {e}"),
+            }
         }
     });
 
