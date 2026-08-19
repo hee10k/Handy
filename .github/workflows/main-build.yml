@@ -46,6 +46,11 @@ jobs:
 
       - name: Build (unsigned test bundle)
         shell: bash
+        # transcribe-cpp's CMakeLists predates CMake 4.x policy enforcement;
+        # the policy minimum keeps the configure step from hard-failing on
+        # modern runners (repo AGENTS.md guidance).
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: |
           bun run tauri build
 
