@@ -241,6 +241,29 @@ fn create_composer(app_handle: &AppHandle) -> Result<(), String> {
     builder.build().map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// Deliver transcribed text directly into the composer webview when the
+/// composer is the focused foreground window of this app (i.e. the user is
+/// composing and dictates with voice). Returns `true` when delivered — the
+/// caller should then skip the OS clipboard paste, which would target the
+/// wrong window or race the WebView's focus. The composer webview appends the
+/// text to its textarea (`composer-voice-input` event).
+pub fn deliver_voice_input_to_focused_composer(app: &AppHandle, text: &str) -> bool {
+    if text.trim().is_empty() {
+        return false;
+    }
+    let focused = match app.get_webview_window(COMPOSER_WINDOW_LABEL) {
+        Some(window) => {
+            window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false)
+        }
+        None => false,
+    };
+    if !focused {
+        return false;
+    }
+    let _ = app.emit_to(COMPOSER_WINDOW_LABEL, "composer-voice-input", text.to_string());
+    true
+}
+
 /// Open the composer: capture the current foreground window, then show /
 /// focus the composer and tell its webview to clear + focus the textarea.
 pub fn open_composer(app_handle: AppHandle) {

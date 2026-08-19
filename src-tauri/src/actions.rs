@@ -822,14 +822,25 @@ impl ShortcutAction for TranscribeAction {
                                         return;
                                     }
 
-                                    match utils::paste(final_text, ah_clone.clone()) {
-                                        Ok(()) => debug!(
-                                            "Text pasted successfully in {:?}",
-                                            paste_time.elapsed()
-                                        ),
-                                        Err(e) => {
-                                            error!("Failed to paste transcription: {}", e);
-                                            let _ = ah_clone.emit("paste-error", ());
+                                    // When the composer is the focused foreground
+                                    // window (user composing + dictating), hand the
+                                    // text to its webview directly instead of an OS
+                                    // clipboard paste, which would race WebView focus.
+                                    if crate::commands::composer::deliver_voice_input_to_focused_composer(
+                                        &ah_clone,
+                                        &final_text,
+                                    ) {
+                                        debug!("Voice input delivered to composer");
+                                    } else {
+                                        match utils::paste(final_text, ah_clone.clone()) {
+                                            Ok(()) => debug!(
+                                                "Text pasted successfully in {:?}",
+                                                paste_time.elapsed()
+                                            ),
+                                            Err(e) => {
+                                                error!("Failed to paste transcription: {}", e);
+                                                let _ = ah_clone.emit("paste-error", ());
+                                            }
                                         }
                                     }
                                     utils::hide_recording_overlay(&ah_clone);

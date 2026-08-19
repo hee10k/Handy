@@ -119,6 +119,34 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
     };
   }, []);
 
+  // Voice-while-composing: when a transcription completes while this composer is
+  // the focused foreground window, the backend delivers it here (rather than an
+  // OS clipboard paste) so it lands deterministically in the draft. Appended to
+  // the textarea and mirrored into the revision stack (ignore mid-transform).
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | undefined;
+    void listen<string>("composer-voice-input", (event) => {
+      if (disposed || streamingRef.current) return;
+      const incoming = event.payload;
+      if (!incoming) return;
+      setText((prev) => {
+        const next =
+          (prev && !prev.endsWith(" ") ? `${prev} ` : prev) + incoming;
+        dispatchRevision({ type: "replace-current", text: next });
+        return next;
+      });
+      textareaRef.current?.focus();
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   // Mount-once listeners for the backend streaming events and the open signal.
   useEffect(() => {
     let disposed = false;
