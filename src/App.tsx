@@ -19,6 +19,7 @@ import { WhatsNewGate } from "./components/whats-new";
 import { useSettings } from "./hooks/useSettings";
 import { useSettingsStore } from "./stores/settingsStore";
 import { commands } from "@/bindings";
+import { invoke } from "@tauri-apps/api/core";
 import { getLanguageDirection, initializeRTL } from "@/lib/utils/rtl";
 
 type OnboardingStep = "accessibility" | "model" | "done";
@@ -193,11 +194,17 @@ function App() {
         // Returning user - check if they need to grant permissions first
         setIsReturningUser(true);
 
+        // Voice input defaults to OFF: with it disabled, never gate returning
+        // users on the microphone permission (composer-first, ADR 3).
+        const voiceInputEnabled = settingsResult.data.voice_input_enabled === true;
+
         if (currentPlatform === "macos") {
           try {
             const [hasAccessibility, hasMicrophone] = await Promise.all([
               checkAccessibilityPermission(),
-              checkMicrophonePermission(),
+              voiceInputEnabled
+                ? checkMicrophonePermission()
+                : Promise.resolve(true),
             ]);
             if (!hasAccessibility || !hasMicrophone) {
               await revealMainWindowForPermissions();
@@ -210,7 +217,7 @@ function App() {
           }
         }
 
-        if (currentPlatform === "windows") {
+        if (currentPlatform === "windows" && voiceInputEnabled) {
           try {
             const microphoneStatus =
               await commands.getWindowsMicrophonePermissionStatus();
@@ -241,9 +248,18 @@ function App() {
   };
 
   const handleAccessibilityComplete = () => {
-    // Returning users already have models, skip to main app
-    // New users need to select a model
-    setOnboardingStep(isReturningUser ? "done" : "model");
+    // Returning users already have models, skip to main app.
+    // New users need to select a model ONLY when voice input is on; with the
+    // default composer-first setup (voice OFF) there is nothing to download,
+    // so mark onboarding complete without a model selection.
+    const voiceEnabled = settings?.voice_input_enabled ?? false;
+    const composerFirst = !isReturningUser && !voiceEnabled;
+    if (composerFirst) {
+      void invoke("mark_onboarding_complete").catch((e) => {
+        console.warn("Failed to mark composer-first onboarding complete:", e);
+      });
+    }
+    setOnboardingStep(composerFirst ? "done" : isReturningUser ? "done" : "model");
   };
 
   const handleModelSelected = () => {

@@ -16,7 +16,8 @@
     "postProcessing": "후처리",
     "history": "히스토리",
     "debug": "디버그",
-    "about": "정보"
+    "about": "정보",
+    "transform": "타자기"
   },
   "onboarding": {
     "subtitle": "시작하려면 음성 인식 모델을 선택하세요",
@@ -179,6 +180,10 @@
           "transcribe_with_post_process": {
             "name": "후처리 단축키",
             "description": "선택 사항: 항상 AI 후처리를 적용하는 전용 단축키입니다."
+          },
+          "composer_open": {
+            "name": "컴포저 열기 단축키",
+            "description": "항상 위에 표시되는 타자기 컴포저 창을 여는 단축키입니다."
           }
         },
         "errors": {
@@ -604,6 +609,47 @@
       "whatsNewUpdates": {
         "label": "새 소식 표시",
         "description": "타자기 업데이트 후 릴리스 노트를 표시합니다"
+      }
+    },
+    "transform": {
+      "inputSource": {
+        "title": "입력 소스",
+        "voiceInput": {
+          "label": "음성 입력",
+          "description": "음성(마이크) 입력을 켭니다. 타자기는 컴포저 중심으로 기본 꺼짐 상태입니다. 꺼두면 음성 모델 다운로드나 마이크 권한 요청이 일어나지 않습니다. 켜면 입력·모델 설정에서 마이크/모델 설정이 다시 노출됩니다."
+        }
+      },
+      "shortcuts": {
+        "title": "컴포저 단축키"
+      },
+      "provider": {
+        "titleGroup": "AI 제공자 (타자기 변환)",
+        "title": "제공자",
+        "description": "입력한 텍스트 변환에 사용할 AI 제공자를 선택합니다.",
+        "appleIntelligence": {
+          "unavailable": "이 기기에서 Apple Intelligence를 사용할 수 없습니다. Apple Silicon Mac과 macOS Tahoe(26.0) 이상이 필요합니다."
+        },
+        "baseUrl": {
+          "title": "기본 URL",
+          "description": "선택한 제공자의 API 기본 URL입니다. 커스텀 제공자만 편집할 수 있습니다.",
+          "placeholder": "https://api.openai.com/v1"
+        },
+        "apiKey": {
+          "title": "API 키",
+          "description": "선택한 제공자의 API 키입니다.",
+          "placeholder": "sk-..."
+        },
+        "model": {
+          "title": "모델",
+          "descriptionCustom": "커스텀 엔드포인트가 기대하는 모델 식별자를 입력하세요.",
+          "descriptionDefault": "선택한 제공자가 제공하는 모델을 선택하세요.",
+          "placeholderWithOptions": "모델 검색 또는 선택",
+          "placeholderNoOptions": "모델 이름 입력",
+          "refreshModels": "모델 새로고침"
+        }
+      },
+      "instructions": {
+        "title": "커스텀 지시문"
       }
     }
   },

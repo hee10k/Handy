@@ -6,6 +6,7 @@ export { HistorySettings } from "./history/HistorySettings";
 export { AboutSettings } from "./about/AboutSettings";
 export { PostProcessingSettings } from "./post-processing/PostProcessingSettings";
 export { ModelsSettings } from "./models/ModelsSettings";
+export { TransformSettings } from "./transform/TransformSettings";
 
 // Individual setting components
 export { MicrophoneSelector } from "./MicrophoneSelector";
@@ -31,5 +32,6 @@ export { StartHidden } from "./StartHidden";
 export { HistoryLimit } from "./HistoryLimit";
 export { RecordingRetentionPeriodSelector } from "./RecordingRetentionPeriod";
 export { AutostartToggle } from "./AutostartToggle";
+export { VoiceInputToggle } from "./VoiceInputToggle";
 export { UpdateChecksToggle } from "./UpdateChecksToggle";
 export { ShowWhatsNewOnUpdate } from "./ShowWhatsNewOnUpdate";

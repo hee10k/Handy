@@ -1013,6 +1013,33 @@ pub fn change_experimental_enabled_setting(app: AppHandle, enabled: bool) -> Res
     Ok(())
 }
 
+/// Enable/disable voice (speech) input. Defaults to OFF so onboarding is
+/// composer-first; turning it on simply re-exposes the existing audio pipeline
+/// (no registry/unregister of a global hotkey — voice is not a shortcut).
+#[tauri::command]
+#[specta::specta]
+pub fn change_voice_input_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.voice_input_enabled = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+/// Mark onboarding as completed without selecting a speech model. The
+/// composer-first path (voice input OFF) skips the model-download step, so the
+/// frontend calls this once first-run permissions are settled to avoid
+/// re-running onboarding on every launch.
+#[tauri::command]
+#[specta::specta]
+pub fn mark_onboarding_complete(app: AppHandle) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    if !settings.onboarding_completed {
+        settings.onboarding_completed = true;
+        settings::write_settings(&app, settings);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn change_post_process_base_url_setting(
