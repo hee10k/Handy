@@ -8,6 +8,10 @@ import type { DropdownOption } from "../../ui/Dropdown";
 
 const APPLE_PROVIDER_ID = "apple_intelligence";
 
+// The compact thinking depths most reasoning models expose (mirrors
+// llm_client::REASONING_LEVELS). Used as both option values and raw labels.
+const reasoningLevels = ["low", "medium", "high", "max"];
+
 type TransformProviderSettingsState = {
   providerOptions: DropdownOption[];
   selectedProviderId: string;
@@ -110,7 +114,6 @@ export const useTransformProviderSettings =
     );
 
     const [reasoningEffort, setReasoningEffort] = useState("");
-  const reasoningLevels = ["low", "medium", "high", "max"];
 
   // Load the effective reasoning level for the selected provider (raw invoke so
   // we stay decoupled from the generated bindings type for the new setting).
@@ -137,14 +140,24 @@ export const useTransformProviderSettings =
 
   const handleReasoningEffortChange = useCallback(
     (value: string) => {
+      // Mirror the pick into the dropdown immediately (it is the controlled
+      // value); the write is best-effort with a rollback on failure.
+      setReasoningEffort(value);
       void invoke("set_transform_reasoning_effort", {
         providerId: selectedProviderId,
         effort: value || null,
       })
         .then(() => refreshSettings())
-        .catch((err) =>
-          console.error("Failed to update transform reasoning effort:", err),
-        );
+        .catch((err) => {
+          console.error("Failed to update transform reasoning effort:", err);
+          void invoke<string | null>("get_transform_reasoning_effort", {
+            providerId: selectedProviderId,
+          }).then((stored) =>
+            setReasoningEffort(
+              stored && reasoningLevels.includes(stored) ? stored : "",
+            ),
+          );
+        });
     },
     [selectedProviderId, refreshSettings],
   );
