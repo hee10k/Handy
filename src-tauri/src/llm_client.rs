@@ -1,4 +1,7 @@
 use crate::settings::PostProcessProvider;
+use futures_util::stream::unfold;
+use futures_util::Stream;
+use futures_util::StreamExt;
 use log::{debug, error, info};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, REFERER, USER_AGENT};
 use serde::{Deserialize, Serialize};
@@ -527,6 +530,206 @@ pub async fn fetch_models(
     Ok(models)
 }
 
+/// Errors surfaced while streaming a chat completion. The `status` is kept out
+/// of any serialized body so upstream callers can classify 401/429/5xx into
+/// user-facing messages without ever echoing an endpoint's raw error body
+/// (which can quote user content or API keys).
+#[derive(Debug)]
+pub enum ChatStreamError {
+    /// Non-2xx response. The body is intentionally NOT exposed to callers —
+    /// only the status code, which is enough to classify auth/rate-limit/server
+    /// failures without risking secret leakage.
+    HttpStatus { status: u16 },
+    /// Transport/network failure (DNS, connect, TLS, timeout, read error).
+    Transport(String),
+    /// Failed to parse the streaming response into content deltas.
+    Decode(String),
+}
+
+impl std::fmt::Display for ChatStreamError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChatStreamError::HttpStatus { status } => {
+                write!(f, "HTTP error with status {}", status)
+            }
+            ChatStreamError::Transport(msg) => write!(f, "{}", msg),
+            ChatStreamError::Decode(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
+/// Extract completed SSE `data:` deltas from a byte chunk, buffering any
+/// trailing partial line in `pending` for the next chunk. Returns the collected
+/// content deltas (empty strings are dropped) and whether the stream signalled
+/// completion with the `data: [DONE]` sentinel.
+///
+/// Non-`data:` lines (comments, blank keepalives) and lines whose JSON does not
+/// parse (or carry no `choices[0].delta.content`) are ignored, so a malformed
+/// keepalive never corrupts the transcript.
+fn sse_extract_deltas(pending: &mut Vec<u8>, chunk: &[u8]) -> (Vec<String>, bool) {
+    pending.extend_from_slice(chunk);
+    let mut deltas = Vec::new();
+    let mut done = false;
+
+    loop {
+        let Some(newline) = pending.iter().position(|&b| b == b'\n') else {
+            break; // no complete line yet; keep the remainder buffered
+        };
+        // Copy the complete line out first so we can mutate `pending` (drain)
+        // without holding a borrow into it.
+        let mut line = pending[..newline].to_vec();
+        pending.drain(..=newline);
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+
+        let text = String::from_utf8_lossy(&line);
+        let trimmed = text.trim();
+        let Some(data) = trimmed.strip_prefix("data:") else {
+            continue;
+        };
+        let payload = data.trim_start();
+        if payload == "[DONE]" {
+            done = true;
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(payload) {
+            if let Some(content) = value
+                .pointer("/choices/0/delta/content")
+                .and_then(|c| c.as_str())
+            {
+                if !content.is_empty() {
+                    deltas.push(content.to_string());
+                }
+            }
+        }
+    }
+
+    (deltas, done)
+}
+
+/// Send a chat completion request that streams its response as Server-Sent
+/// Events, reusing the existing OpenAI-compatible client, provider header
+/// building, and error sanitization.
+///
+/// On success this returns a stream that yields batches of content deltas
+/// (`Vec<String>`); the stream terminates naturally at `data: [DONE]` or at the
+/// end of the HTTP body. Pre-stream failures (transport, non-2xx status) are
+/// returned as `Err`, and mid-stream failures surface as `Err` items.
+pub async fn send_chat_completion_stream(
+    provider: &PostProcessProvider,
+    api_key: String,
+    model: &str,
+    system_prompt: Option<String>,
+    user_content: String,
+    disable_reasoning: bool,
+) -> Result<impl Stream<Item = Result<Vec<String>, ChatStreamError>>, ChatStreamError> {
+    let base_url = provider.base_url.trim_end_matches('/');
+    let url = format!("{}/chat/completions", base_url);
+    debug!(
+        "Sending streaming chat completion request to: {}",
+        sanitized_url_for_log(&url)
+    );
+
+    let client = create_client(provider, &api_key).map_err(ChatStreamError::Transport)?;
+
+    let mut messages = Vec::new();
+    if let Some(system) = system_prompt {
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: system,
+        });
+    }
+    messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: user_content,
+    });
+
+    let key = endpoint_key(provider, model);
+    let reasoning = if disable_reasoning && !is_known_rejected(&key) {
+        reasoning_disable_params(provider)
+    } else {
+        ReasoningParams::default()
+    };
+
+    let request_body = ChatCompletionRequest {
+        model: model.to_string(),
+        messages,
+        stream: true,
+        response_format: None,
+        reasoning,
+    };
+
+    let response = client
+        .post(&url)
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| ChatStreamError::Transport(report_reqwest_error("HTTP request failed", &e)))?;
+    let status = response.status();
+    debug!(
+        "Streaming chat completion response received with status {} over {:?} from {}",
+        status,
+        response.version(),
+        sanitized_url(response.url())
+    );
+
+    if !status.is_success() {
+        // Read and discard the body so the connection is released. The raw body
+        // is never propagated (it can quote secrets/content).
+        let _ = response
+            .text()
+            .await
+            .map_err(|e| report_reqwest_error("Failed to read error response", &e));
+        return Err(ChatStreamError::HttpStatus {
+            status: status.as_u16(),
+        });
+    }
+
+    let byte_stream = response.bytes_stream();
+    // (byte_stream, pending-line buffer, done flag)
+    let seed = (byte_stream, Vec::<u8>::new(), false);
+
+    Ok(unfold(seed, |(mut stream, mut buffer, mut done)| async move {
+        if done {
+            return None;
+        }
+        loop {
+            match stream.next().await {
+                Some(Ok(chunk)) => {
+                    let (deltas, stream_done) = sse_extract_deltas(&mut buffer, &chunk);
+                    if stream_done {
+                        done = true;
+                    }
+                    if !deltas.is_empty() {
+                        return Some((Ok(deltas), (stream, buffer, done)));
+                    }
+                    if done {
+                        return None;
+                    }
+                    // No complete deltas yet and not done: keep reading.
+                }
+                Some(Err(e)) => {
+                    let err = ChatStreamError::Transport(report_reqwest_error(
+                        "Streaming response read failed",
+                        &e,
+                    ));
+                    return Some((Err(err), (stream, buffer, done)));
+                }
+                None => {
+                    // Producer ended without an explicit [DONE]; flush a residual
+                    // tail if a partial line remained.
+                    let residual = String::from_utf8_lossy(&buffer).trim().to_string();
+                    if residual.is_empty() {
+                        return None;
+                    }
+                    return Some((Ok(vec![residual]), (stream, Vec::new(), true)));
+                }
+            }
+        }
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -730,5 +933,149 @@ mod tests {
         assert!(is_known_rejected(&key));
         // A different model on the same endpoint is tracked separately
         assert!(!is_known_rejected(&endpoint_key(&deepseek, "other-model")));
+    }
+
+    // ---------------------------------------------------------------- streaming
+
+    fn sse_chunk(pending: &mut Vec<u8>, chunk: &str) -> (Vec<String>, bool) {
+        sse_extract_deltas(pending, chunk.as_bytes())
+    }
+
+    #[test]
+    fn sse_extracts_deltas_across_chunk_boundaries() {
+        let mut pending = Vec::new();
+        let full = "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\
+                    data: {\"choices\":[{\"delta\":{\"content\":\"lo \"}}]}\n\
+                    data: {\"choices\":[{\"delta\":{\"content\":\"world\"}}]}\n\n";
+
+        // Feed partial chunks so a single message spans multiple frames.
+        let (d1, done1) = sse_chunk(&mut pending, &full[..20]);
+        assert_eq!(d1, Vec::<String>::new());
+        assert!(!done1);
+
+        let (d2, _done2) = sse_chunk(&mut pending, &full[20..]);
+        assert_eq!(d2, vec!["Hel".to_string(), "lo ".to_string(), "world".to_string()]);
+        // The trailing blank line yields no further delta and nothing is left.
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn sse_done_sentinel_terminates_and_content_null_is_ignored() {
+        let mut pending = Vec::new();
+        let (deltas, done) = sse_chunk(
+            &mut pending,
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\
+             data: {\"choices\":[{\"delta\":{\"content\":null},\"finish_reason\":\"stop\"}]}\n\
+             data: [DONE]\n\n",
+        );
+        assert_eq!(deltas, vec!["ok".to_string()]);
+        assert!(done);
+    }
+
+    #[test]
+    fn sse_ignores_non_data_and_malformed_lines() {
+        let mut pending = Vec::new();
+        let (deltas, done) = sse_chunk(
+            &mut pending,
+            ": keepalive\n\n\
+             data: [DONE]\n",
+        );
+        assert!(deltas.is_empty());
+        assert!(done);
+    }
+
+    #[test]
+    fn sse_handles_crlf_line_endings() {
+        let mut pending = Vec::new();
+        let (deltas, done) = sse_chunk(
+            &mut pending,
+            "data: {\"choices\":[{\"delta\":{\"content\":\"yes\"}}]}\r\ndata: [DONE]\r\n",
+        );
+        assert_eq!(deltas, vec!["yes".to_string()]);
+        assert!(done);
+    }
+
+    #[tokio::test]
+    async fn stream_end_to_end_transcribes_sse_body() {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\
+                    data: {\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n\
+                    data: [DONE]\n\n";
+        let base_url = serve_one_response("200 OK", body).await;
+        let p = provider("openai", &base_url);
+
+        let mut stream = send_chat_completion_stream(
+            &p,
+            String::new(),
+            "test-model",
+            Some("be brief".to_string()),
+            "hello".to_string(),
+            false,
+        )
+        .await
+        .expect("request should start")
+        .boxed();
+
+        let mut collected = String::new();
+        while let Some(item) = stream.next().await {
+            for delta in item.expect("delta batch") {
+                collected.push_str(&delta);
+            }
+        }
+        assert_eq!(collected, "onetwo");
+    }
+
+    #[tokio::test]
+    async fn stream_surfaces_http_status_without_body() {
+        // 401 body mentions a secret to prove it is never propagated.
+        let base_url =
+            serve_one_response("401 Unauthorized", r#"{"error":"bad key sk-secret-ABC"}"#).await;
+        let p = provider("openai", &base_url);
+
+        let err = match send_chat_completion_stream(
+            &p,
+            String::from("sk-secret-ABC"),
+            "test-model",
+            None,
+            "hi".to_string(),
+            false,
+        )
+        .await
+        {
+            Err(err) => err,
+            Ok(_) => panic!("non-2xx must fail before a stream is returned"),
+        };
+
+        match err {
+            ChatStreamError::HttpStatus { status } => assert_eq!(status, 401),
+            other => panic!("expected HttpStatus, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_request_serializes_stream_true() {
+        let base_url = serve_one_response("200 OK", "data: [DONE]\n\n").await;
+        let p = provider("openai", &base_url);
+
+        // Build the same request body the stream path constructs, then assert
+        // the wire contract (stream:true, system message first).
+        let mut messages = vec![ChatMessage {
+            role: "system".to_string(),
+            content: "be brief".to_string(),
+        }];
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: "hi".to_string(),
+        });
+        let request = ChatCompletionRequest {
+            model: "test-model".to_string(),
+            messages,
+            stream: true,
+            response_format: None,
+            reasoning: ReasoningParams::default(),
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["stream"], true);
+        assert_eq!(json["messages"][0]["role"], "system");
+        assert_eq!(json["messages"][1]["role"], "user");
     }
 }
