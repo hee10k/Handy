@@ -110,17 +110,22 @@ export const useTransformProviderSettings =
     );
 
     const [reasoningEffort, setReasoningEffort] = useState("");
-  const reasoningLevels = ["none", "low", "medium", "high", "xhigh", "max"];
+  const reasoningLevels = ["low", "medium", "high", "max"];
 
   // Load the effective reasoning level for the selected provider (raw invoke so
   // we stay decoupled from the generated bindings type for the new setting).
+  // A disable/off value (e.g. the legacy custom default) renders as "auto".
   useEffect(() => {
     let disposed = false;
     void invoke<string | null>("get_transform_reasoning_effort", {
       providerId: selectedProviderId,
     })
       .then((value) => {
-        if (!disposed) setReasoningEffort(value ?? "");
+        if (!disposed) {
+          setReasoningEffort(
+            value && reasoningLevels.includes(value) ? value : "",
+          );
+        }
       })
       .catch(() => {
         if (!disposed) setReasoningEffort("");

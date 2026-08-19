@@ -87,9 +87,17 @@ fn reasoning_disable_params(provider: &PostProcessProvider) -> ReasoningParams {
     }
 }
 
-/// Reasoning/thinking levels a provider model may be asked for. `none` turns
-/// thinking off; the rest are effort depths a model supports.
-pub const REASONING_LEVELS: &[&str] = &["none", "low", "medium", "high", "xhigh", "max"];
+/// Reasoning/thinking levels a provider model may be asked for. These match the
+/// compact depth set most reasoning models expose. `none` (disabling thinking)
+/// is still understood internally as the compose-away default, but is not an
+/// offered level.
+pub const REASONING_LEVELS: &[&str] = &["low", "medium", "high", "max"];
+
+/// True when an effort value means "disable reasoning" rather than a depth.
+fn is_disable_effort(level: &str) -> bool {
+    let l = level.trim().to_lowercase();
+    l.is_empty() || l == "none" || l == "disabled"
+}
 
 /// Build the reasoning request fields for a provider given an effort level.
 /// `none`/`disabled`/empty disables reasoning with the endpoint-appropriate
@@ -415,7 +423,11 @@ pub async fn send_chat_completion_with_schema(
     let key = endpoint_key(provider, model);
     let reasoning = match reasoning_effort.as_deref() {
         None => ReasoningParams::default(),
-        Some(level) if is_known_rejected(&key) => ReasoningParams::default(),
+        // Only the disable path is skipped when the endpoint has rejected it;
+        // an explicit level is always sent so the user's choice takes effect.
+        Some(level) if is_disable_effort(level) && is_known_rejected(&key) => {
+            ReasoningParams::default()
+        }
         Some(level) => reasoning_params(provider, level),
     };
 
@@ -685,7 +697,11 @@ pub async fn send_chat_completion_stream(
     let key = endpoint_key(provider, model);
     let reasoning = match reasoning_effort.as_deref() {
         None => ReasoningParams::default(),
-        Some(level) if is_known_rejected(&key) => ReasoningParams::default(),
+        // Only the disable path is skipped when the endpoint has rejected it;
+        // an explicit level is always sent so the user's choice takes effect.
+        Some(level) if is_disable_effort(level) && is_known_rejected(&key) => {
+            ReasoningParams::default()
+        }
         Some(level) => reasoning_params(provider, level),
     };
 

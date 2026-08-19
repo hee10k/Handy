@@ -154,9 +154,8 @@ const TransformProviderConfig: React.FC = () => {
                 { value: "", label: t("settings.transform.provider.reasoning.auto") },
                 ...state.reasoningLevels.map((level) => ({
                   value: level,
-                  label: t(
-                    `settings.transform.provider.reasoning.levels.${level}`,
-                  ),
+                  // The model's own API level tokens need no translation.
+                  label: level,
                 })),
               ]}
               onChange={(value) =>
