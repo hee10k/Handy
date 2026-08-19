@@ -756,6 +756,7 @@
     "diffAria": "Compare original",
     "cancel": "Cancel",
     "closeTitle": "Close composer",
-    "keysHint": "Shift+Enter for a new line"
+    "keysHint": "Shift+Enter for a new line",
+    "openSettingsTitle": "Open settings"
   }
 }

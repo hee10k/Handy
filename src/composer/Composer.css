@@ -33,11 +33,16 @@
   pointer-events: none;
 }
 
-.composer__close {
+.composer__topbar {
   position: absolute;
   top: 8px;
   right: 8px;
   z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.composer__iconbtn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -53,12 +58,12 @@
   cursor: pointer;
   transition: background 120ms ease, color 120ms ease;
 }
-.composer__close:hover {
+.composer__iconbtn:hover {
   background: rgba(255, 255, 255, 0.16);
   color: #fff;
 }
 
-.composer.composer--streaming .composer__close {
+.composer.composer--streaming .composer__iconbtn {
   background: rgba(255, 159, 10, 0.25);
   color: #ff9f0a;
 }

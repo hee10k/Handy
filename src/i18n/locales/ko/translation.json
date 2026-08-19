@@ -756,6 +756,7 @@
     "diffAria": "원문 비교",
     "cancel": "취소",
     "closeTitle": "컴포저 닫기",
-    "keysHint": "Shift+Enter 줄바꿈"
+    "keysHint": "Shift+Enter 줄바꿈",
+    "openSettingsTitle": "설정 열기"
   }
 }

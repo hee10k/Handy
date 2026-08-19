@@ -314,6 +314,10 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
     void invoke("cancel_composer");
   };
 
+  const openSettings = () => {
+    void invoke("show_main_window_command");
+  };
+
   // Undo/redo: move the revision pointer and restore the target revision's text
   // into the textarea. Reading `revisionState` from the current render keeps the
   // target index correct without stale closures.
@@ -332,6 +336,12 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
     // While the IME composes, Enter finalizes the current syllable and Esc
     // cancels the in-progress composition — never treat those as commit/close.
     if (e.nativeEvent.isComposing) {
+      return;
+    }
+    // Settings (Cmd+, / Ctrl+,) opens the main settings window from here.
+    if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+      e.preventDefault();
+      openSettings();
       return;
     }
     // Undo/redo across revisions (ticket 05). Meta = ⌘ on macOS, Ctrl elsewhere.
@@ -384,18 +394,32 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
       onClick={() => textareaRef.current?.focus()}
     >
       <div className="composer__glow" aria-hidden="true" />
-      <button
-        type="button"
-        className="composer__close"
-        aria-label={t("composer.closeTitle")}
-        title={t("composer.closeTitle")}
-        onClick={(e) => {
-          e.stopPropagation();
-          cancel();
-        }}
-      >
-        {String.fromCharCode(0x2715)}
-      </button>
+      <div className="composer__topbar">
+        <button
+          type="button"
+          className="composer__iconbtn"
+          aria-label={t("composer.openSettingsTitle")}
+          title={t("composer.openSettingsTitle")}
+          onClick={(e) => {
+            e.stopPropagation();
+            openSettings();
+          }}
+        >
+          {String.fromCharCode(0x2699)}
+        </button>
+        <button
+          type="button"
+          className="composer__iconbtn"
+          aria-label={t("composer.closeTitle")}
+          title={t("composer.closeTitle")}
+          onClick={(e) => {
+            e.stopPropagation();
+            cancel();
+          }}
+        >
+          {String.fromCharCode(0x2715)}
+        </button>
+      </div>
       {modes.length > 0 && (
         <div className="composer__modes" role="group" aria-label={t("composer.modesAriaLabel")}>
           {modes.map((m) => (
