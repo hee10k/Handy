@@ -17,10 +17,12 @@ mod overlay;
 mod paste_tx;
 pub mod portable;
 mod secure_input;
+mod secret;
 mod settings;
 mod shortcut;
 mod signal_handle;
 mod transcription_coordinator;
+mod transform;
 mod tray;
 mod tray_i18n;
 mod utils;
@@ -722,6 +724,17 @@ pub fn run(cli_args: CliArgs) {
             commands::transcription::unload_model_manually,
             commands::composer::commit_composer,
             commands::composer::cancel_composer,
+            commands::transform::list_transform_modes,
+            commands::transform::run_transform,
+            commands::transform::cancel_transform,
+            commands::transform::get_transform_provider,
+            commands::transform::set_transform_provider,
+            commands::transform::get_transform_model,
+            commands::transform::set_transform_model,
+            commands::transform::fetch_transform_models,
+            commands::transform::get_transform_api_key,
+            commands::transform::set_transform_api_key,
+            commands::transform::delete_transform_api_key,
             commands::history::get_history_entries,
             commands::history::toggle_history_entry_saved,
             commands::history::get_audio_file_path,
@@ -735,6 +748,9 @@ pub fn run(cli_args: CliArgs) {
             managers::history::HistoryUpdatePayload,
             managers::transcription::StreamTextEvent,
             managers::transcription::StreamPhaseEvent,
+            transform::TransformDelta,
+            transform::TransformErrorEvent,
+            transform::TransformDone,
         ]);
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds
@@ -930,6 +946,7 @@ pub fn run(cli_args: CliArgs) {
             WEBVIEW_LOG_STREAMING.store(settings.debug_mode, Ordering::Relaxed);
             let app_handle = app.handle().clone();
             app.manage(TranscriptionCoordinator::new(app_handle.clone()));
+            app.manage(transform::TransformState::default());
 
             initialize_core_logic(&app_handle);
 
