@@ -10,6 +10,7 @@ import {
 import { toast } from "sonner";
 import { commands } from "@/bindings";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useSettings } from "@/hooks/useSettings";
 import HandyTextLogo from "../icons/HandyTextLogo";
 import { Keyboard, Mic, Check, Loader2 } from "lucide-react";
 
@@ -29,6 +30,11 @@ const AccessibilityOnboarding: React.FC<AccessibilityOnboardingProps> = ({
   onComplete,
 }) => {
   const { t } = useTranslation();
+  const { settings } = useSettings();
+  // Voice input defaults to OFF: onboarding is composer-first, so the
+  // microphone permission must NOT be requested (or required) until the user
+  // opts in via Settings (ADR 3).
+  const voiceInputEnabled = settings?.voice_input_enabled ?? false;
   const refreshAudioDevices = useSettingsStore(
     (state) => state.refreshAudioDevices,
   );
@@ -48,14 +54,16 @@ const AccessibilityOnboarding: React.FC<AccessibilityOnboardingProps> = ({
 
   const isMacOS = permissionPlatform === "macos";
   const isWindows = permissionPlatform === "windows";
-  const showMicrophonePermission = isMacOS || isWindows;
+  const showMicrophonePermission = voiceInputEnabled && (isMacOS || isWindows);
   const showAccessibilityPermission = isMacOS;
 
+  // With voice disabled, the microphone is never required (and never
+  // requested). Only accessibility remains a gate on macOS.
   const allGranted = isMacOS
     ? permissions.accessibility === "granted" &&
-      permissions.microphone === "granted"
+      (!voiceInputEnabled || permissions.microphone === "granted")
     : isWindows
-      ? permissions.microphone === "granted"
+      ? !voiceInputEnabled || permissions.microphone === "granted"
       : true;
 
   const completeOnboarding = useCallback(async () => {
@@ -95,10 +103,15 @@ const AccessibilityOnboarding: React.FC<AccessibilityOnboardingProps> = ({
     const checkInitial = async () => {
       if (nextPlatform === "macos") {
         try {
-          const [accessibilityGranted, microphoneGranted] = await Promise.all([
-            checkAccessibilityPermission(),
-            checkMicrophonePermission(),
-          ]);
+          // When voice input is disabled, skip the microphone permission check
+          // entirely (composer-first onboarding) and treat it as granted.
+          const [accessibilityGranted, microphoneGranted] =
+            await Promise.all([
+              checkAccessibilityPermission(),
+              voiceInputEnabled
+                ? checkMicrophonePermission()
+                : Promise.resolve(true),
+            ]);
 
           // If accessibility is granted, initialize Enigo and shortcuts
           if (accessibilityGranted) {
@@ -114,12 +127,13 @@ const AccessibilityOnboarding: React.FC<AccessibilityOnboardingProps> = ({
 
           const newState: PermissionsState = {
             accessibility: accessibilityGranted ? "granted" : "needed",
-            microphone: microphoneGranted ? "granted" : "needed",
+            microphone:
+              voiceInputEnabled && !microphoneGranted ? "needed" : "granted",
           };
 
           setPermissions(newState);
 
-          if (accessibilityGranted && microphoneGranted) {
+          if (accessibilityGranted && (voiceInputEnabled ? microphoneGranted : true)) {
             await completeOnboarding();
           }
         } catch (error) {
@@ -135,6 +149,13 @@ const AccessibilityOnboarding: React.FC<AccessibilityOnboardingProps> = ({
       }
 
       try {
+        // Voice disabled: skip the mic permission entirely (composer-first).
+        if (!voiceInputEnabled) {
+          setPermissions({ accessibility: "granted", microphone: "granted" });
+          await completeOnboarding();
+          return;
+        }
+
         const microphoneGranted = await hasWindowsMicrophoneAccess();
 
         setPermissions({
@@ -165,6 +186,11 @@ const AccessibilityOnboarding: React.FC<AccessibilityOnboardingProps> = ({
     pollingRef.current = setInterval(async () => {
       try {
         if (permissionPlatform === "windows") {
+          // Voice disabled: never gate on mic permission.
+          if (!voiceInputEnabled) {
+            await completeOnboarding();
+            return;
+          }
           const microphoneGranted = await hasWindowsMicrophoneAccess();
 
           if (microphoneGranted) {
@@ -184,7 +210,9 @@ const AccessibilityOnboarding: React.FC<AccessibilityOnboardingProps> = ({
 
         const [accessibilityGranted, microphoneGranted] = await Promise.all([
           checkAccessibilityPermission(),
-          checkMicrophonePermission(),
+          voiceInputEnabled
+            ? checkMicrophonePermission()
+            : Promise.resolve(true),
         ]);
 
         setPermissions((prev) => {
@@ -208,8 +236,9 @@ const AccessibilityOnboarding: React.FC<AccessibilityOnboardingProps> = ({
           return newState;
         });
 
-        // If both granted, stop polling, refresh audio devices, and proceed
-        if (accessibilityGranted && microphoneGranted) {
+        // If the required permissions are all granted, stop polling, refresh
+        // audio devices, and proceed (mic not required when voice is disabled).
+        if (accessibilityGranted && (voiceInputEnabled ? microphoneGranted : true)) {
           if (pollingRef.current) {
             clearInterval(pollingRef.current);
             pollingRef.current = null;
@@ -233,7 +262,13 @@ const AccessibilityOnboarding: React.FC<AccessibilityOnboardingProps> = ({
         }
       }
     }, 1000);
-  }, [completeOnboarding, hasWindowsMicrophoneAccess, permissionPlatform, t]);
+  }, [
+    completeOnboarding,
+    hasWindowsMicrophoneAccess,
+    permissionPlatform,
+    voiceInputEnabled,
+    t,
+  ]);
 
   // Cleanup polling and timeouts on unmount
   useEffect(() => {

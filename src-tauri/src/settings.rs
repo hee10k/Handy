@@ -373,6 +373,11 @@ pub struct AppSettings {
     pub selected_model: String,
     #[serde(default)]
     pub onboarding_completed: bool,
+    /// Whether voice (speech) input is enabled as an input source. Defaults to
+    /// OFF so first-run/onboarding is composer-first: no speech-model download
+    /// and no microphone-permission prompt until the user opts in (ADR 3).
+    #[serde(default)]
+    pub voice_input_enabled: bool,
     #[serde(default = "default_always_on_microphone")]
     pub always_on_microphone: bool,
     #[serde(default)]
@@ -901,6 +906,7 @@ pub fn get_default_settings() -> AppSettings {
         whats_new_last_seen_version: default_whats_new_last_seen_version(),
         selected_model: "".to_string(),
         onboarding_completed: false,
+        voice_input_enabled: false,
         always_on_microphone: false,
         selected_microphone: None,
         selected_channel: None,
@@ -1201,6 +1207,8 @@ mod tests {
         assert!(settings.push_to_talk);
         assert!(!settings.audio_feedback);
         assert!(settings.filler_word_removal_enabled);
+        // Voice input is OFF by default (composer-first onboarding, ADR 3).
+        assert!(!settings.voice_input_enabled);
         // Bindings default to empty; the load path merges the real defaults in.
         assert!(settings.bindings.is_empty());
     }

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings as Settings,
   AudioDevice,
@@ -78,6 +79,11 @@ const settingUpdaters: {
 } = {
   always_on_microphone: (value) =>
     commands.updateMicrophoneMode(value as boolean),
+  voice_input_enabled: (value) =>
+    // Not yet in the shared specta bindings; raw-invoke the backend command.
+    invoke("change_voice_input_enabled_setting", {
+      enabled: value as boolean,
+    }),
   audio_feedback: (value) =>
     commands.changeAudioFeedbackSetting(value as boolean),
   audio_feedback_volume: (value) =>
