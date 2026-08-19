@@ -3,10 +3,14 @@ name: "Main Branch Build"
 # Runs the full cross-platform build on every push to main so breakage is
 # caught before a manual release is triggered. Artifacts are kept for 30 days
 # so any commit on main has a downloadable, testable build.
+#
+# Tajagi soft-fork: `tajagi` (our feature branch, kept diverged from upstream
+# `main`) is built too, so every push to the fork's Tajagi code produces a
+# downloadable Windows (and macOS/Linux) build for testing.
 
 on:
   push:
-    branches: [main]
+    branches: [main, tajagi]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
