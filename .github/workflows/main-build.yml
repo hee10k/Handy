@@ -102,8 +102,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # The bundle artifacts land as nested deb/rpm/appimage/nsis dirs, so
+          # collect the actual files, not the directory tree.
+          mapfile -t FILES < <(find release-assets -type f \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.msi' -o -name '*.exe' -o -name '*.tar.gz' -o -name '*.zip' \) )
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "No installer files found under release-assets/"; exit 1
+          fi
+          echo "Uploading ${#FILES[@]} files:"
+          printf '  %s\n' "${FILES[@]}"
           gh release upload \
             "${{ steps.version.outputs.tag }}" \
-            release-assets/* \
+            "${FILES[@]}" \
             --repo "${{ github.repository }}" \
-            --clobber || true
+            --clobber
