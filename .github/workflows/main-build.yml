@@ -4,9 +4,10 @@ name: "Main Branch Build"
 # Azure trusted-signing, updater key) that this fork does not have. The fork
 # sets sign-binaries: false and its tauri.conf.json builds unsigned
 # (createUpdaterArtifacts: false, no windows.signCommand), so every push to
-# main / tajagi produces plain unsigned installers on the full platform
-# matrix — including Windows, which is the 5x paste-matrix test target.
-# Artifacts are kept 30 days.
+# main / tajagi produces plain unsigned installers on the matrix — Windows
+# (x86_64 + ARM64) being the 5x paste-matrix test target, plus Linux. The fork
+# builds macOS locally (no release artifacts needed here), so macOS is not in
+# the matrix. Artifacts are kept 30 days.
 
 on:
   push:
@@ -25,12 +26,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: "macos-26"
-            args: "--target aarch64-apple-darwin"
-            target: "aarch64-apple-darwin"
-          - platform: "macos-latest"
-            args: "--target x86_64-apple-darwin"
-            target: "x86_64-apple-darwin"
           - platform: "ubuntu-22.04"
             args: "--bundles deb"
             target: "x86_64-unknown-linux-gnu"
