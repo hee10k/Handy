@@ -44,6 +44,16 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # transcribe-cpp-sys hard-enables the Vulkan backend on windows x86_64
+      # (see src-tauri/Cargo.toml target cfg), so the runner needs the Vulkan
+      # SDK. Matches build.yml.
+      - name: Install Vulkan SDK (Windows x64)
+        if: matrix.platform == 'windows-latest'
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.4.309.0
+          cache: true
+
       - name: Build (unsigned test bundle)
         shell: bash
         # transcribe-cpp's CMakeLists predates CMake 4.x policy enforcement;
