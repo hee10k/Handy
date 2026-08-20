@@ -55,6 +55,30 @@ interface PendingTransform {
   instruction: string;
 }
 
+// Context-aware quick-action emphasis (ticket 09 MVP): the foreground app's
+// coarse category reorders the composer's assigned quick buttons and highlights
+// the most relevant ones. This ONLY adjusts ordering/prominence — content is
+// never read and no screenshot is taken.
+interface QuickActionSlot {
+  slot: number; // 1..10, maps to Cmd/Ctrl+1..0
+  mode: string; // transform mode id
+}
+
+interface ForegroundContext {
+  category: AppCategory;
+}
+
+type AppCategory = "browser" | "editor" | "mail" | "other";
+
+// Category -> transform mode ids, most relevant first. Only listed modes move
+// to the front (in this order); unlisted modes keep their slot order after them.
+const CATEGORY_PREFERRED: Record<AppCategory, string[]> = {
+  editor: ["polish", "custom", "translate_english", "prompt_english"],
+  browser: ["translate_english", "prompt_english", "polish", "custom"],
+  mail: ["polish", "translate_english", "prompt_english", "custom"],
+  other: [], // keep assigned slot order
+};
+
 // IME input (한글 조합) must reach the textarea untouched. Our own hotkeys
 // (Enter = commit, Esc = cancel) are deliberately suppressed while the OS IME
 // is composing, so those keys keep their IME meanings (confirm / cancel the
@@ -78,6 +102,9 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
     EMPTY_REVISION,
   );
   const [showDiff, setShowDiff] = useState(false);
+  // 퀵 액션 (ticket 09): 사용자 할당 슬롯 (1..10 -> mode) + 포그라운드 앱 카테고리.
+  const [quickSlots, setQuickSlots] = useState<QuickActionSlot[]>([]);
+  const [appCategory, setAppCategory] = useState<AppCategory>("other");
 
   // Refs for values the mount-once event listeners must read without stale
   // closures. `streaming` guards against stray deltas after done/error/cancel;
@@ -97,6 +124,14 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
       })
       .catch(() => {
         // Selector stays empty; the composer remains usable as a plain input.
+      });
+    void invoke<[number, string][]>("get_quick_action_slots")
+      .then((slots) => {
+        if (!disposed)
+          setQuickSlots(slots.map(([slot, mode]) => ({ slot, mode })));
+      })
+      .catch(() => {
+        // No assigned slots; the quick bar stays hidden.
       });
     return () => {
       disposed = true;
@@ -188,6 +223,15 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
           setIsComposing(false);
           dispatchRevision({ type: "reset" });
           setShowDiff(false);
+          // Re-classify the foreground app each time the composer opens so the
+          // quick buttons reflect the current context (ticket 09).
+          void invoke<string>("get_foreground_app_category")
+            .then((c) => {
+              if (!disposed && (c === "browser" || c === "editor" || c === "mail"))
+                setAppCategory(c);
+              else setAppCategory("other");
+            })
+            .catch(() => setAppCategory("other"));
           requestAnimationFrame(() => {
             textareaRef.current?.focus();
           });
@@ -257,8 +301,54 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
     requestTransform(m.id, "");
   };
 
+  // Run a transform from a quick button or Cmd/Ctrl+shortcut (ticket 09).
+  // Instruction-taking modes open the instruction input instead of running.
+  const runQuickAction = (modeId: string) => {
+    if (streaming) return;
+    const m = modes.find((x) => x.id === modeId);
+    if (!m) return;
+    if (m.takes_instruction) {
+      setMode(m.id);
+      requestAnimationFrame(() => instructionRef.current?.focus());
+      return;
+    }
+    requestTransform(modeId, "");
+  };
+
+  // Assigned quick slots, reordered so the current category's preferred modes
+  // surface first (highlighted); unlisted modes keep slot order afterwards.
+  const quickButtons = useMemo(() => {
+    if (quickSlots.length === 0) return [];
+    const preferred = CATEGORY_PREFERRED[appCategory] ?? [];
+    if (appCategory === "other" || preferred.length === 0) return quickSlots;
+    const rank = new Map(preferred.map((m, i) => [m, i]));
+    const fallback = preferred.length;
+    return [...quickSlots].sort((a, b) => {
+      const ra = rank.get(a.mode) ?? fallback;
+      const rb = rank.get(b.mode) ?? fallback;
+      return ra - rb || a.slot - b.slot;
+    });
+  }, [quickSlots, appCategory]);
+
+  // The single most relevant action for the current category (highlighted).
+  const suggestedMode = useMemo(() => {
+    const preferred = CATEGORY_PREFERRED[appCategory] ?? [];
+    if (appCategory === "other" || preferred.length === 0) return null;
+    return (
+      preferred.find((m) => quickSlots.some((s) => s.mode === m)) ?? null
+    );
+  }, [quickSlots, appCategory]);
+
   const handleInstructionKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.nativeEvent.isComposing) return; // let the IME finalize the instruction
+    // Quick actions also work while the instruction input is focused.
+    if ((e.metaKey || e.ctrlKey) && e.key >= "0" && e.key <= "9") {
+      e.preventDefault();
+      const slotIdx = e.key === "0" ? 10 : Number(e.key);
+      const assigned = quickSlots.find((s) => s.slot === slotIdx);
+      if (assigned) runQuickAction(assigned.mode);
+      return;
+    }
     if (e.key === "Enter") {
       e.preventDefault();
       requestTransform("custom", instruction);
@@ -352,6 +442,14 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
       openSettings();
       return;
     }
+    // Quick actions (ticket 09): Cmd/Ctrl+1..0 triggers the assigned slot.
+    if ((e.metaKey || e.ctrlKey) && e.key >= "0" && e.key <= "9") {
+      e.preventDefault();
+      const slotIdx = e.key === "0" ? 10 : Number(e.key);
+      const assigned = quickSlots.find((s) => s.slot === slotIdx);
+      if (assigned) runQuickAction(assigned.mode);
+      return;
+    }
     // Undo/redo across revisions (ticket 05). Meta = ⌘ on macOS, Ctrl elsewhere.
     if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z")) {
       e.preventDefault();
@@ -428,6 +526,36 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
           {String.fromCharCode(0x2715)}
         </button>
       </div>
+      {quickButtons.length > 0 && (
+        <div
+          className="composer__quick"
+          role="group"
+          aria-label={t("composer.quickAriaLabel")}
+        >
+          {quickButtons.map((qs) => {
+            const meta = modes.find((m) => m.id === qs.mode);
+            if (!meta) return null; // mode no longer available; skip the slot
+            const isSuggested = suggestedMode === qs.mode;
+            return (
+              <button
+                key={qs.slot}
+                type="button"
+                className={`composer__quickbtn ${
+                  isSuggested ? "composer__quickbtn--suggested" : ""
+                }`}
+                title={meta.description}
+                disabled={streaming}
+                onClick={() => runQuickAction(qs.mode)}
+              >
+                <span className="composer__quick-key">
+                  {qs.slot === 10 ? "0" : qs.slot}
+                </span>
+                <span className="composer__quick-label">{meta.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
       {modes.length > 0 && (
         <div className="composer__modes" role="group" aria-label={t("composer.modesAriaLabel")}>
           {modes.map((m) => (

@@ -622,6 +622,12 @@
       "shortcuts": {
         "title": "컴포저 단축키"
       },
+      "quickActions": {
+        "titleGroup": "퀵 액션",
+        "title": "퀵 액션 배정",
+        "description": "각 슬롯에 변환 모드를 배정하세요. 컴포저 포커스 상태에서 Cmd/Ctrl+1..0 또는 퀵 버튼 클릭으로 실행됩니다. 빈 슬롯은 숨겨지고 단축키에서 제외됩니다. 슬롯 1-4는 기본값이 채워져 있습니다.",
+        "emptyPlaceholder": "비어 있음"
+      },
       "provider": {
         "titleGroup": "AI 제공자 (타자기 변환)",
         "title": "제공자",
@@ -757,6 +763,7 @@
     "cancel": "취소",
     "closeTitle": "컴포저 닫기",
     "keysHint": "Shift+Enter 줄바꿈",
-    "openSettingsTitle": "설정 열기"
+    "openSettingsTitle": "설정 열기",
+    "quickAriaLabel": "퀵 액션"
   }
 }

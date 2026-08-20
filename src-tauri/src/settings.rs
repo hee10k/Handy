@@ -439,6 +439,12 @@ pub struct AppSettings {
     pub post_process_prompts: Vec<LLMPrompt>,
     #[serde(default)]
     pub post_process_selected_prompt_id: Option<String>,
+    /// Composer quick-action slots (ticket 09): slot index 1..=10 -> transform
+    /// mode id. Slots 1-4 default to the primary modes; 5-10 are absent (empty)
+    /// until the user assigns them in settings. Rendered as the composer's
+    /// quick buttons and bound to Cmd/Ctrl+1..0.
+    #[serde(default = "default_quick_action_slots")]
+    pub quick_action_slots: HashMap<u8, String>,
     #[serde(default)]
     pub mute_while_recording: bool,
     #[serde(default)]
@@ -751,6 +757,15 @@ fn default_post_process_prompts() -> Vec<LLMPrompt> {
     }]
 }
 
+fn default_quick_action_slots() -> HashMap<u8, String> {
+    let mut map = HashMap::new();
+    map.insert(1, "polish".to_string());
+    map.insert(2, "translate_english".to_string());
+    map.insert(3, "prompt_english".to_string());
+    map.insert(4, "custom".to_string());
+    map
+}
+
 fn default_transcribe_gpu_device() -> Option<String> {
     None // automatic device selection
 }
@@ -941,6 +956,7 @@ pub fn get_default_settings() -> AppSettings {
         post_process_reasoning_effort: HashMap::new(),
         post_process_prompts: default_post_process_prompts(),
         post_process_selected_prompt_id: None,
+        quick_action_slots: default_quick_action_slots(),
         mute_while_recording: false,
         append_trailing_space: false,
         app_language: default_app_language(),

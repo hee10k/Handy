@@ -161,6 +161,49 @@ pub fn set_transform_reasoning_effort(
     Ok(())
 }
 
+/// The composer quick-action slots (ticket 09): sorted (slot, mode_id) pairs
+/// for every assigned slot; slots 5-10 are simply absent until configured.
+#[tauri::command]
+#[specta::specta]
+pub fn get_quick_action_slots(app: AppHandle) -> Result<Vec<(u8, String)>, String> {
+    let settings = get_settings(&app);
+    let mut slots: Vec<(u8, String)> = settings
+        .quick_action_slots
+        .iter()
+        .map(|(idx, mode)| (*idx, mode.clone()))
+        .collect();
+    slots.sort_by_key(|(idx, _)| *idx);
+    Ok(slots)
+}
+
+/// Assign a transform mode to one of the 10 quick-action slots
+/// (Cmd/Ctrl+1..0). `None` clears the slot. Slot index is 1-based, 1..=10.
+#[tauri::command]
+#[specta::specta]
+pub fn set_quick_action_slot(
+    app: AppHandle,
+    slot: u8,
+    mode: Option<String>,
+) -> Result<(), String> {
+    if !(1..=10).contains(&slot) {
+        return Err("Quick-action slot must be between 1 and 10".to_string());
+    }
+    if let Some(value) = &mode {
+        parse_transform_mode(value)?; // reject unknown mode ids
+    }
+    let mut settings = get_settings(&app);
+    match mode {
+        Some(value) => {
+            settings.quick_action_slots.insert(slot, value);
+        }
+        None => {
+            settings.quick_action_slots.remove(&slot);
+        }
+    }
+    write_settings(&app, settings);
+    Ok(())
+}
+
 /// Fetch the list of available model ids from the provider, reusing the
 /// existing OpenAI-compatible model listing path.
 #[tauri::command]

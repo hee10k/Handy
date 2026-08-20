@@ -622,6 +622,12 @@
       "shortcuts": {
         "title": "Composer Shortcuts"
       },
+      "quickActions": {
+        "titleGroup": "Quick Actions",
+        "title": "Assign quick actions",
+        "description": "Assign a transform mode to each slot. Use Cmd/Ctrl+1..0 while the composer is focused, or click the quick button. Empty slots are hidden and unbound; slots 1-4 ship with defaults.",
+        "emptyPlaceholder": "Empty"
+      },
       "provider": {
         "titleGroup": "AI Provider (Tajagi Transform)",
         "title": "Provider",
@@ -757,6 +763,7 @@
     "cancel": "Cancel",
     "closeTitle": "Close composer",
     "keysHint": "Shift+Enter for a new line",
-    "openSettingsTitle": "Open settings"
+    "openSettingsTitle": "Open settings",
+    "quickAriaLabel": "Quick actions"
   }
 }

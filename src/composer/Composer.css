@@ -208,6 +208,68 @@
   cursor: default;
 }
 
+/* Quick actions (ticket 09): context-biased one-click transforms. */
+.composer__quick {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-right: 28px;
+}
+
+.composer__quickbtn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 4px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.7);
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.composer__quickbtn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #f2f2f7;
+}
+
+.composer__quickbtn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.composer__quick-key {
+  flex: 0 0 auto;
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* The single most relevant action for the current foreground app category is
+   highlighted so the user's next keystroke is a clear default. */
+.composer__quickbtn--suggested {
+  background: rgba(10, 132, 255, 0.22);
+  border-color: rgba(10, 132, 255, 0.7);
+  color: #f2f2f7;
+}
+
+.composer__quickbtn--suggested .composer__quick-key {
+  background: rgba(10, 132, 255, 0.35);
+  color: #f2f2f7;
+}
+
 .composer__instruction {
   flex: 0 0 auto;
   box-sizing: border-box;

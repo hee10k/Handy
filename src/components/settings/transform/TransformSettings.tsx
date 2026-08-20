@@ -18,6 +18,7 @@ import { PostProcessingSettingsPrompts } from "../post-processing/PostProcessing
 
 import { ShortcutInput } from "../ShortcutInput";
 import { VoiceInputToggle } from "../VoiceInputToggle";
+import { QuickActionConfig } from "./QuickActionConfig";
 import { useTransformProviderSettings } from "./useTransformProviderSettings";
 
 const TransformProviderConfig: React.FC = () => {
@@ -190,6 +191,10 @@ export const TransformSettings: React.FC = () => {
 
       <SettingsGroup title={t("settings.transform.shortcuts.title")}>
         <ShortcutInput shortcutId="composer_open" grouped={true} />
+      </SettingsGroup>
+
+      <SettingsGroup title={t("settings.transform.quickActions.titleGroup")}>
+        <QuickActionConfig />
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.transform.provider.titleGroup")}>

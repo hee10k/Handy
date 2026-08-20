@@ -110,6 +110,39 @@ mod platform {
     /// `SetForegroundWindow`, so this is a no-op placeholder for the shared
     /// open path.
     pub(super) fn ensure_key_window(_window: &tauri::WebviewWindow) {}
+
+    pub(super) fn foreground_app_category() -> String {
+        "other".to_string()
+    }
+}
+
+/// Map a foreground app's lowercased bundle id / display name to a coarse
+/// product category used only to bias the composer's quick-button prominence
+/// (ticket 09): `browser` | `editor` | `mail` | `other`. Pure string matching,
+/// platform-independent, so it is unit-testable everywhere.
+fn classify_foreground_app(bundle: &str, name: &str) -> String {
+    let needle = format!("{bundle} {name}");
+    let mail = ["apple.mail", "outlook", "mail", "spark", "thunderbird"];
+    let browsers = [
+        "safari", "chrome", "google chrome", "edge", "firefox", "brave",
+        "thebrowser", "arc", "opera", "vivaldi",
+    ];
+    let editors = [
+        "vscode", "visual-studio-code", "code", "cursor", "jetbrains",
+        "intellij", "pycharm", "webstorm", "clion", "goland", "phpstorm",
+        "rustrover", "zed", "xcode", "sublime", "textedit", "neovide",
+        "macvim", "nvim",
+    ];
+    if mail.iter().any(|k| needle.contains(k)) {
+        return "mail".into();
+    }
+    if browsers.iter().any(|k| needle.contains(k)) {
+        return "browser".into();
+    }
+    if editors.iter().any(|k| needle.contains(k)) {
+        return "editor".into();
+    }
+    "other".into()
 }
 
 /// macOS: capture the frontmost running application and reactivate it.
@@ -187,6 +220,26 @@ mod platform {
             };
         }
     }
+
+    /// Classify the frontmost app into a coarse product category used only to
+    /// adjust the composer's quick-button prominence (ticket 09). Reads the
+    /// AppKit frontmost application's bundle id / name — no Accessibility
+    /// permission required. Unknown/unreadable results map to "other".
+    pub(super) fn foreground_app_category() -> String {
+        let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        let Some(frontmost) = workspace.frontmostApplication() else {
+            return "other".into();
+        };
+        let bundle = frontmost
+            .bundleIdentifier()
+            .map(|b| b.to_string())
+            .unwrap_or_default();
+        let name = frontmost
+            .localizedName()
+            .map(|n| n.to_string())
+            .unwrap_or_default();
+        super::classify_foreground_app(&bundle.to_lowercase(), &name.to_lowercase())
+    }
 }
 
 /// No focus management on unsupported platforms: the composer is hidden and
@@ -203,6 +256,10 @@ mod platform {
     pub(super) fn restore_focus(_app: &AppHandle, _focus: &CapturedFocus) {}
 
     pub(super) fn ensure_key_window(_window: &tauri::WebviewWindow) {}
+
+    pub(super) fn foreground_app_category() -> String {
+        "other".to_string()
+    }
 }
 
 // ============================================================================
@@ -448,9 +505,23 @@ pub fn cancel_composer(app: AppHandle) -> Result<(), String> {
     });
     Ok(())
 }
+
+/// Classify the foreground app (browser/editor/mail/other) so the composer can
+/// bias its quick actions toward the current context (ticket 09). AppKit calls
+/// run on the main thread; non-macOS and unreadable cases return "other".
+#[tauri::command]
+#[specta::specta]
+pub async fn get_foreground_app_category(app: AppHandle) -> Result<String, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(platform::foreground_app_category());
+    })
+    .map_err(|e| format!("Failed to dispatch foreground-app query: {e}"))?;
+    Ok(rx.await.unwrap_or_else(|_| "other".to_string()))
+}
 #[cfg(test)]
 mod tests {
-    use super::{composer_history_fields, should_commit};
+    use super::{classify_foreground_app, composer_history_fields, should_commit};
 
     #[test]
     fn empty_and_whitespace_text_never_commits() {
@@ -465,6 +536,36 @@ mod tests {
         assert!(should_commit("안녕하세요"));
         assert!(should_commit("  hello world  "));
         assert!(should_commit("한\n글"));
+    }
+
+    #[test]
+    fn foreground_classify_known_apps() {
+        // bundle id, name -> category
+        assert_eq!(
+            classify_foreground_app("com.google.chrome", "Google Chrome"),
+            "browser"
+        );
+        assert_eq!(
+            classify_foreground_app("com.microsoft.vscode", "Code"),
+            "editor"
+        );
+        assert_eq!(
+            classify_foreground_app("com.apple.mail", "Mail"),
+            "mail"
+        );
+        assert_eq!(
+            classify_foreground_app("com.apple.safari", "Safari"),
+            "browser"
+        );
+    }
+
+    #[test]
+    fn foreground_classify_unknown_is_other() {
+        assert_eq!(
+            classify_foreground_app("com.apple.finder", "Finder"),
+            "other"
+        );
+        assert_eq!(classify_foreground_app("", ""), "other");
     }
 
     #[test]

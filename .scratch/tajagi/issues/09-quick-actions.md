@@ -4,7 +4,17 @@
 
 **Blocked by:** 04 (composer integration), 06 (settings UI)
 
-**Status:** ready-for-agent
+**Status:** done (2026-08-20)
+
+**구현 참고:** 카테고리 감지는 macOS AX 대신 `NSWorkspace.frontmostApplication`의 번들 id/이름 기반 분류(`classify_foreground_app`, 퓨어 함수)로 구현 — AX 접근성 권한이 불필요하고 단위 테스트 가능. Apps(브라우저/에디터/메일)는 `AppCategory` 타입으로 조정. 
+
+- [x] 백엔드: 전경 앱 카테고리 감지 — `get_foreground_app_category()` 커맨드, 브라우저/에디터/메일/기타 분류, 비-macOS/불가 시 `other` 폴백. (NSWorkspace frontmostApplication 기반)
+- [x] 백엔드: 슬롯 설정 `quick_action_slots` (settings) — 기본 4개 = 기본 모드, 5~10 = 빈. get/set 커맨드 (`get_quick_action_slots` / `set_quick_action_slot`)
+- [x] 컴포저: 퀵버튼 바 (슬롯 순서 렌더링, 첫 4 기본 백분, 빈 슬롯 숨김)
+- [x] 컴포저: Cmd/Ctrl+1..N → 해당 퀵 슬롯 실행, IME 조합 중 억제
+- [x] 컴포저: 카테고리 기반 우선순위 재정렬/강조 (MVP = 하이라이트 우선, 순서 안정)
+- [x] 설정 UI: 슬롯 1~10 에 액션(모드) 배정 (`QuickActionConfig`)
+- [x] 검증: cargo test(245 pass) / lint(0) / build(clean) / 라이브 확인
 
 **확정 설계 (그릴 2026-08-20):**
 - 슬롯 10개 (Cmd+1..0). 처음 4개 기본 고정: `polish`, `translate_english`, `prompt_english`, `custom`. 슬롯 5~10은 **빈 상태**로 시작해 사용자가 설정에서 채움.
