@@ -51,3 +51,59 @@ jobs:
       # Fork has no code-signing secrets; build unsigned (see tauri.conf.json).
       sign-binaries: false
     secrets: inherit
+
+  # Auto-release: after a successful main build, publish the finished
+  # installers as a GitHub Release. Gated to `main` (tajagi pushes build for
+  # pre-merge checks but do not release). Tags are unique per run
+  # (v<version>-build<run_number>) so every main build gets its own release.
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(grep -o '"version": "[^"]*"' src-tauri/tauri.conf.json | cut -d'"' -f4)
+          TAG="v${VERSION}-build${GITHUB_RUN_NUMBER}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Download installers
+        uses: actions/download-artifact@v7
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ steps.version.outputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release ${{ steps.version.outputs.tag }} already exists; skipping."
+            exit 0
+          fi
+          gh release create \
+            "${{ steps.version.outputs.tag }}" \
+            --title "Tajagi v${{ steps.version.outputs.version }} (build ${{ github.run_number }})" \
+            --notes "Auto-release generated from a successful main build. Unsigned — Windows + Linux, macOS is built locally." \
+            --generate-notes \
+            --repo "${{ github.repository }}"
+
+      - name: Upload installers as release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload \
+            "${{ steps.version.outputs.tag }}" \
+            release-assets/* \
+            --repo "${{ github.repository }}" \
+            --clobber || true
