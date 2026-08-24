@@ -270,51 +270,116 @@
   color: #f2f2f7;
 }
 
-/* Local autocomplete dropdown (offline wordfreq dictionaries). */
-.composer__completions {
+/* Multi-source continuation panel (bottom, one line per option). */
+.composer__suggest {
   flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  margin-right: 28px;
+  overflow: hidden;
+}
+
+.composer__suggest-head {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding-right: 28px;
-}
-
-.composer__completion {
-  flex: 0 0 auto;
-  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 12px 4px 5px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.05);
-  color: rgba(255, 255, 255, 0.75);
-  font: inherit;
-  font-size: 12px;
-  line-height: 16px;
-  cursor: pointer;
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.composer__completion:hover,
-.composer__completion--active {
-  background: rgba(10, 132, 255, 0.22);
-  border-color: rgba(10, 132, 255, 0.7);
+.composer__suggest-title {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.45);
+  letter-spacing: 0.02em;
+}
+
+.composer__ai {
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(10, 132, 255, 0.55);
+  background: rgba(10, 132, 255, 0.16);
+  color: #60b5ff;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.composer__ai:hover:not(:disabled) {
+  background: rgba(10, 132, 255, 0.28);
+}
+
+.composer__ai:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.composer__suggest-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.composer__suggest-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.82);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.composer__suggest-line:last-child {
+  border-bottom: none;
+}
+
+.composer__suggest-line:hover,
+.composer__suggest-line--first {
+  background: rgba(255, 255, 255, 0.05);
   color: #f2f2f7;
 }
 
-.composer__completion-tag {
+.composer__suggest-src {
   flex: 0 0 auto;
-  padding: 0 4px;
+  padding: 1px 6px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.5);
   font-size: 10px;
-  line-height: 16px;
+  line-height: 15px;
+  min-width: 40px;
+  text-align: center;
 }
 
-/* Local typo correction: corrected sentence shown below the input (click to
-   apply). Cleared once the draft is clean (no change). */
+.composer__suggest-src--bm25 {
+  background: rgba(255, 159, 10, 0.18);
+  color: #ff9f0a;
+}
+
+.composer__suggest-src--prob {
+  background: rgba(48, 209, 88, 0.16);
+  color: #30d158;
+}
+
+.composer__suggest-src--ai {
+  background: rgba(10, 132, 255, 0.18);
+  color: #60b5ff;
+}
+
+.composer__suggest-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/*_ Corrected-sentence banner (_apply). Cleared once the draft is clean. */
 .composer__correction {
   flex: 0 0 auto;
   display: inline-flex;

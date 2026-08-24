@@ -768,7 +768,12 @@
     "quickAriaLabel": "Quick actions",
     "correctionLabel": "Correction",
     "correctionTitle": "Apply the corrected sentence",
-    "completionsAria": "Autocomplete suggestions",
-    "completionKeyHint": "Tab"
+    "suggestAria": "Continuation suggestions",
+    "suggestTitle": "Continue…",
+    "suggestSrcAi": "AI",
+    "suggestSrcLocal": "Local",
+    "aiSuggest": "AI suggestions",
+    "aiLoading": "Thinking…",
+    "aiSuggestTitle": "Fetch AI continuations for the current sentence"
   }
 }

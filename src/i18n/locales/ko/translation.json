@@ -768,7 +768,12 @@
     "quickAriaLabel": "퀵 액션",
     "correctionLabel": "맞춤법 보정",
     "correctionTitle": "보정된 문장 적용",
-    "completionsAria": "자동완성 추천",
-    "completionKeyHint": "Tab"
+    "suggestAria": "문장 이어가기 추천",
+    "suggestTitle": "문장 이어가기",
+    "suggestSrcAi": "AI",
+    "suggestSrcLocal": "로컬",
+    "aiSuggest": "AI 추천",
+    "aiLoading": "생각 중…",
+    "aiSuggestTitle": "AI로 현재 문장 이어가기 추천"
   }
 }

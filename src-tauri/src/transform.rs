@@ -7,7 +7,7 @@
 //! English renders English, Prompt English turns raw notes into a well-formed
 //! English prompt, and Custom applies a user instruction.
 
-use crate::llm_client::{send_chat_completion_stream, ChatStreamError};
+use crate::llm_client::{send_chat_completion, send_chat_completion_stream, ChatStreamError};
 use crate::secret;
 use crate::settings::{get_settings, PostProcessProvider};
 use futures_util::stream::BoxStream;
@@ -520,6 +520,83 @@ fn emit_error(app: &AppHandle, error: &TransformError, mode: TransformMode) {
             mode: mode.to_string(),
         },
     );
+}
+
+/// On-demand "continue the sentence" suggestions from the selected transform
+/// provider (multiple prompt/weight variants → up to `count` distinct lines).
+/// Non-streaming; called from the composer's AI-recommend button, never on
+/// every keystroke. Returns up to `count` clean continuation strings.
+#[tauri::command]
+#[specta::specta]
+pub async fn suggest_llm_continuations(
+    app: AppHandle,
+    text: String,
+    count: usize,
+) -> Result<Vec<String>, String> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let count = count.clamp(1, 5);
+
+    let settings = get_settings(&app);
+    let provider = settings
+        .active_post_process_provider()
+        .cloned()
+        .ok_or_else(|| "No transform provider is selected. Choose one in Settings.".to_string())?;
+    if provider.base_url.starts_with("apple-intelligence://") {
+        return Err(
+            "Apple Intelligence does not support AI continuation suggestions.".to_string(),
+        );
+    }
+    let model = settings
+        .post_process_models
+        .get(&provider.id)
+        .cloned()
+        .unwrap_or_default();
+    if model.trim().is_empty() {
+        return Err("No model is selected for the transform provider.".to_string());
+    }
+    let api_key = match secret::get_api_key(&app, &provider.id) {
+        Ok(k) => k.unwrap_or_default(),
+        Err(e) => return Err(format!("Could not read the API key: {e}")),
+    };
+    let reasoning_effort = settings.reasoning_effort_for(&provider.id);
+
+    let system_prompt = format!(
+        "You are a concise writing assistant. Continue the user's sentence naturally, \
+         matching the language (and formality) they used. Return exactly {count} distinct, \
+         short continuations — one per line. No numbering, no bullets, no quotes, no \
+         commentary. Each continuation is 2–15 words and reads as a direct continuation of \
+         their sentence after a space."
+    );
+    let user_prompt = text.clone();
+    let reply = crate::llm_client::send_chat_completion(
+        &provider,
+        api_key,
+        &model,
+        format!("{system_prompt}\n\nSentence to continue:\n{user_prompt}"),
+        reasoning_effort,
+    )
+    .await?
+    .unwrap_or_default();
+
+    let mut out: Vec<String> = Vec::new();
+    for line in reply.lines() {
+        let line = line.trim().trim_matches(['-', '*', '"', '\'', '1', '2', '3', '4', '5'])
+            .trim()
+            .to_string();
+        if line.is_empty() {
+            continue;
+        }
+        if !out.iter().any(|s| s == &line) {
+            out.push(line);
+        }
+        if out.len() >= count {
+            break;
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

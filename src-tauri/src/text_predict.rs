@@ -17,6 +17,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
+use serde::Serialize;
+use specta::Type;
 use symspell_rs::{SymSpell, Verbosity};
 use tauri::Manager;
 
@@ -24,6 +26,15 @@ use tauri::Manager;
 /// Trades a little recall for a much smaller SymSpell delete index (build time
 /// and memory). 150k covers the vast majority of everyday English + Korean.
 const MAX_INDEXED_WORDS: usize = 150_000;
+
+/// One line of a continuation suggestion in the composer's bottom panel.
+/// `source` is `bm25` | `prob` (local, always present) or `ai` (on-demand LLM).
+#[derive(Serialize, Type, Clone, Debug)]
+pub struct ContinuationSuggestion {
+    pub source: &'static str,
+    pub text: String,
+    pub score: f32,
+}
 
 /// A ready-to-query text predictor. Built once from a dictionary and shared.
 pub struct TextPredictor {
@@ -33,6 +44,10 @@ pub struct TextPredictor {
     freq_rank: HashMap<String, usize>,
     /// Edit-distance corrector over the same vocabulary.
     spell: SymSpell,
+    /// Character-bigram -> document frequency, for word-based BM25 scoring.
+    bigram_df: HashMap<String, u32>,
+    /// Total indexed words (document count for BM25 idf).
+    doc_count: u32,
 }
 
 /// Parses wordfreq-format dictionary lines (`word <log10 probability>`) into
@@ -67,6 +82,19 @@ fn is_korean_token(word: &str) -> bool {
     word.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c))
 }
 
+/// Overlapping character bigrams of a string (used for word-based BM25).
+fn char_bigrams(s: &str) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    chars.windows(2).map(|w| w.iter().collect()).collect()
+}
+
+/// Common Korean/English continuers used when the sentence is already complete
+/// (no in-progress word) so there is still a local "keep writing" suggestion.
+const CONTINUATION_CONNECTORS: &[&str] = &[
+    "그리고", "또한", "하지만", "그래서", "그런데", "다음으로", "반면에", "따라서", "and", "but",
+    "so", "also", "then", "next", "however", "therefore", "moreover",
+];
+
 /// True when `token` == `suggestion` + exactly one particle suffix (non-empty).
 fn is_particle_suffix(token: &str, suggestion: &str) -> bool {
     if !token.starts_with(suggestion) || token.len() <= suggestion.len() {
@@ -86,6 +114,8 @@ impl TextPredictor {
                 prefix_sorted: Vec::new(),
                 freq_rank: HashMap::new(),
                 spell: SymSpell::new(1, None, 7, 1),
+                bigram_df: HashMap::new(),
+                doc_count: 0,
             };
         }
         let freq_order: Vec<String> = parsed.drain(..).map(|(w, _)| w).collect();
@@ -112,10 +142,24 @@ impl TextPredictor {
             spell.create_dictionary_entry(w.clone(), n - i);
         }
 
+        // Character-bigram document frequencies for word-based BM25 scoring.
+        let doc_count = freq_order.len() as u32;
+        let mut bigram_df: HashMap<String, u32> = HashMap::new();
+        for w in &freq_order {
+            let mut seen: Vec<String> = char_bigrams(w);
+            seen.sort();
+            seen.dedup();
+            for b in seen {
+                *bigram_df.entry(b).or_insert(0) += 1;
+            }
+        }
+
         Self {
             prefix_sorted,
             freq_rank,
             spell,
+            bigram_df,
+            doc_count,
         }
     }
 
@@ -244,6 +288,136 @@ impl TextPredictor {
         }
         changed.then_some(out)
     }
+
+    /// Dictionary words sharing `prefix` (byte-ordered prefix scan), paired with
+    /// their frequency rank (lower = more common), up to `max`.
+    fn prefix_matches<'a>(&'a self, prefix: &str, max: usize) -> Vec<(usize, &'a str)> {
+        if prefix.is_empty() {
+            return Vec::new();
+        }
+        let lo = self
+            .prefix_sorted
+            .partition_point(|w| w.as_bytes() < prefix.as_bytes());
+        let mut hi_guard = prefix.as_bytes().to_vec();
+        hi_guard.push(0xFF);
+        let hi_guard = String::from_utf8_lossy(&hi_guard);
+        let hi = self
+            .prefix_sorted
+            .partition_point(|w| w.as_bytes() < hi_guard.as_bytes());
+        self.prefix_sorted[lo..hi]
+            .iter()
+            .filter(|w| w.starts_with(prefix))
+            .take(max)
+            .map(|w| (self.freq_rank.get(w).copied().unwrap_or(usize::MAX), w.as_str()))
+            .collect()
+    }
+
+    /// Word-based BM25 score of `word` against the sentence's char-bigrams.
+    fn bm25_score(&self, word: &str, query_bigrams: &[String]) -> f32 {
+        const K1: f32 = 1.5;
+        const B: f32 = 0.75;
+        const AVG_DOC_LEN: f32 = 6.5;
+        let dl = word.chars().count() as f32;
+        let word_bigrams = char_bigrams(word);
+        let mut score = 0.0f32;
+        for q in query_bigrams {
+            let df = self.bigram_df.get(q).copied().unwrap_or(0);
+            if df == 0 {
+                continue;
+            }
+            let n = self.doc_count as f32;
+            let idf = ((n - df as f32 + 0.5) / (df as f32 + 0.5) + 1.0).ln();
+            let tf = word_bigrams.iter().filter(|b| *b == q).count() as f32;
+            let denom = tf + K1 * (1.0 - B + B * dl / AVG_DOC_LEN);
+            score += idf * (tf * (K1 + 1.0)) / denom;
+        }
+        score
+    }
+
+    /// Up to 2 local continuation lines (`bm25` + `prob`) for the current draft.
+    /// When a word is in progress, both complete it (prob = top-frequency,
+    /// bm25 = best lexical-overlap variant for diversity). When the sentence is
+    /// complete, both fall back to common continuation connectors. Smooths into
+    /// the composer's bottom panel alongside on-demand LLM lines.
+    pub fn continuation_candidates(&self, text: &str) -> Vec<ContinuationSuggestion> {
+        let lower = text.to_lowercase();
+        if lower.trim().is_empty() {
+            return Vec::new();
+        }
+        let tokens: Vec<&str> = lower.split_whitespace().collect();
+        let ends_in_word = !lower.ends_with(' ') && !lower.ends_with('\n') && !lower.ends_with('\t');
+        let prefix = if ends_in_word {
+            tokens.last().copied().unwrap_or("").to_string()
+        } else {
+            String::new()
+        };
+        let query_bigrams = char_bigrams(&lower);
+
+        let mut out: Vec<ContinuationSuggestion> = Vec::new();
+        if !prefix.is_empty() {
+            let matches = self.prefix_matches(&prefix, 64);
+            // prob: the highest-frequency match.
+            let prob = matches.iter().min_by_key(|(rank, _)| *rank).copied();
+            if let Some(best) = prob {
+                out.push(ContinuationSuggestion {
+                    source: "prob",
+                    text: best.1.to_string(),
+                    score: 1.0
+                        - (self
+                            .freq_rank
+                            .get(best.1)
+                            .copied()
+                            .unwrap_or(usize::MAX) as f32
+                            / 1_000_000.0),
+                });
+            }
+            // bm25: best lexical-overlap match distinct from the prob pick.
+            if let Some(best) = matches
+                .iter()
+                .filter(|(_, w)| *w != out.first().map(|s| s.text.as_str()).unwrap_or(""))
+                .map(|(_, w)| (self.bm25_score(w, &query_bigrams), *w))
+                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+            {
+                if best.0 > 0.0 {
+                    out.push(ContinuationSuggestion {
+                        source: "bm25",
+                        text: best.1.to_string(),
+                        score: best.0,
+                    });
+                }
+            }
+        } else {
+            // Sentence complete: common continuers present in the dictionary.
+            let mut present: Vec<&str> = CONTINUATION_CONNECTORS
+                .iter()
+                .copied()
+                .filter(|c| self.freq_rank.contains_key(*c))
+                .collect();
+            present.sort_by_key(|c| self.freq_rank.get(*c).copied().unwrap_or(usize::MAX));
+            if let Some(first) = present.first() {
+                out.push(ContinuationSuggestion {
+                    source: "prob",
+                    text: (*first).to_string(),
+                    score: 0.9,
+                });
+            }
+            if let Some(best) = present
+                .iter()
+                .filter(|c| **c != out.first().map(|s| s.text.as_str()).unwrap_or(""))
+                .map(|c| (self.bm25_score(c, &query_bigrams), *c))
+                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+            {
+                if best.0 > 0.0 {
+                    out.push(ContinuationSuggestion {
+                        source: "bm25",
+                        text: best.1.to_string(),
+                        score: best.0,
+                    });
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Lazy, shared predictor built from bundled resources on first use.
@@ -332,6 +506,27 @@ pub fn complete_prefix(
     Ok(predictor.complete_prefix(&prefix, limit.unwrap_or(5), true))
 }
 
+/// Local continuation suggestions (`bm25` + `prob`) for the composer's bottom
+/// panel — pure dictionary/BM25, instant and offline. LLM lines are a separate,
+/// on-demand command (`transform::suggest_llm_continuations`).
+#[tauri::command]
+#[specta::specta]
+pub fn get_continuation_suggestions(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PredictorState>,
+    text: String,
+) -> Result<Vec<ContinuationSuggestion>, String> {
+    let resolve = |rel: &str| {
+        app.path()
+            .resolve(rel, tauri::path::BaseDirectory::Resource)
+            .map_err(|e| format!("Cannot locate bundled dictionary '{rel}': {e}"))
+    };
+    let ko = resolve("models/small_ko.txt.zst")?;
+    let en = resolve("models/large_en.txt.zst")?;
+    let predictor = load_predictor(&ko, &en, &state)?;
+    Ok(predictor.continuation_candidates(&text))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +611,24 @@ mod tests {
         // "컴퓨터" — the guard treats it as a legitimate inflected form.
         let out = p.correct_sentence("컴퓨터는", 1);
         assert!(out.is_none(), "got {out:?}");
+    }
+
+    #[test]
+    fn continuation_has_prob_and_bm25_lines() {
+        let p = predictor();
+        // Mid-word: complete "자전" → 자전거 (prob) and a bm25 line.
+        let mid = p.continuation_candidates("나는 자전");
+        assert!(
+            mid.iter().any(|s| s.source == "prob" && s.text == "자전거"),
+            "mid-word prob should complete 자전: {mid:?}"
+        );
+        assert!(mid.iter().any(|s| s.source == "bm25"), "bm25 line present: {mid:?}");
+        // Complete sentence: falls back to a connector (prob always; bm25 only
+        // when a connector shares lexical bigrams with the sentence).
+        let full = p.continuation_candidates("이제 시작하겠습니다 ");
+        assert!(!full.is_empty() && full[0].source == "prob", "prob connector: {full:?}");
+        // Empty draft → no suggestions.
+        assert!(p.continuation_candidates("").is_empty());
     }
 
     /// Builds the index from the actual bundled wordfreq models and sanity-checks

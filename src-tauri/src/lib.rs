@@ -754,6 +754,8 @@ pub fn run(cli_args: CliArgs) {
             commands::composer::get_foreground_app_category,
             text_predict::correct_text,
             text_predict::complete_prefix,
+            text_predict::get_continuation_suggestions,
+            transform::suggest_llm_continuations,
             commands::transform::list_transform_modes,
             commands::transform::run_transform,
             commands::transform::cancel_transform,
