@@ -403,10 +403,34 @@ useEffect(() => {
     );
   }, [quickSlots, appCategory]);
 
-  // Append a chosen continuation line to the draft (with a separating space),
-  // and mirror it into the revision so it participates in undo/redo.
+  // Iteratively split the draft on whitespace (kept simple for small drafts).
+  const trailingToken = (value: string) => {
+    const m = value.match(/\s(\S+)$/);
+    if (m) return m[1] ?? "";
+    return value.trim();
+  };
+
+  // Apply a chosen continuation line, mirroring it into the revision so it
+  // participates in undo/redo. When the suggestion completes the trailing
+  // partial word (mid-word prob/bm25 lines), it REPLACES that partial token
+  // instead of duplicating it (e.g. "자전" + "자전거" → "자전거"). Otherwise it
+  // is appended with a separating space (connector / AI continuation lines).
   const applySuggestion = (s: ContinuationSuggestion) => {
-    const next = `${text}${text && !text.endsWith(" ") ? " " : ""}${s.text} `;
+    const hasTrailing = text.length > 0 && !/\s$/.test(text);
+    const trailing = hasTrailing ? trailingToken(text) : "";
+    let next: string;
+    if (
+      trailing.length > 0 &&
+      s.text.toLowerCase().startsWith(trailing.toLowerCase())
+    ) {
+      // Mid-word completion: replace the partial token with the full word.
+      const prefix = text.slice(0, text.length - trailing.length);
+      next = `${prefix}${s.text} `;
+    } else if (hasTrailing) {
+      next = `${text} ${s.text} `;
+    } else {
+      next = `${text}${s.text} `;
+    }
     setText(next);
     dispatchRevision({ type: "replace-current", text: next });
     setSuggestions([]);

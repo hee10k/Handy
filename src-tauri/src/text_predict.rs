@@ -334,11 +334,13 @@ impl TextPredictor {
         score
     }
 
-    /// Up to 2 local continuation lines (`bm25` + `prob`) for the current draft.
-    /// When a word is in progress, both complete it (prob = top-frequency,
-    /// bm25 = best lexical-overlap variant for diversity). When the sentence is
-    /// complete, both fall back to common continuation connectors. Smooths into
-    /// the composer's bottom panel alongside on-demand LLM lines.
+/// Up to 5 local continuation lines (`prob` + `bm25`) for the current
+    /// draft. When a word is in progress, `prob` lines are the top-frequency
+    /// strictly-longer prefix completions (the bare partial word is excluded)
+    /// and `bm25` lines are the best lexical-overlap variants for diversity.
+    /// When the sentence is complete, both fall back to common connectors.
+    /// Deduped across sources (prob wins), capped at 5. Smoothes into the
+    /// composer's bottom panel alongside on-demand LLM lines.
     pub fn continuation_candidates(&self, text: &str) -> Vec<ContinuationSuggestion> {
         let lower = text.to_lowercase();
         if lower.trim().is_empty() {
@@ -352,39 +354,42 @@ impl TextPredictor {
             String::new()
         };
         let query_bigrams = char_bigrams(&lower);
-
         let mut out: Vec<ContinuationSuggestion> = Vec::new();
+
+        let frequency = |w: &str| self.freq_rank.get(w).copied().unwrap_or(usize::MAX);
+
         if !prefix.is_empty() {
-            let matches = self.prefix_matches(&prefix, 64);
-            // prob: the highest-frequency match.
-            let prob = matches.iter().min_by_key(|(rank, _)| *rank).copied();
-            if let Some(best) = prob {
+            // Strictly-longer prefix completions, by frequency.
+            let mut matches: Vec<(usize, &str)> = self
+                .prefix_matches(&prefix, 256)
+                .into_iter()
+                .filter(|(_, w)| *w != prefix.as_str() && w.len() > prefix.len())
+                .collect();
+            matches.sort_by_key(|(r, w)| (*r, std::cmp::Reverse(w.chars().count())));
+
+            // prob: top-3 by frequency.
+            for (freq_rank, w) in matches.iter().take(3) {
                 out.push(ContinuationSuggestion {
                     source: "prob",
-                    text: best.1.to_string(),
-                    score: 1.0
-                        - (self
-                            .freq_rank
-                            .get(best.1)
-                            .copied()
-                            .unwrap_or(usize::MAX) as f32
-                            / 1_000_000.0),
+                    text: (*w).to_string(),
+                    score: 1.0 - (*freq_rank as f32 / 1_000_000.0),
                 });
             }
-            // bm25: best lexical-overlap match distinct from the prob pick.
-            if let Some(best) = matches
+
+            // bm25: top-2 lexical-overlap matches distinct from prob picks.
+            let mut bm25: Vec<(f32, &str)> = matches
                 .iter()
-                .filter(|(_, w)| *w != out.first().map(|s| s.text.as_str()).unwrap_or(""))
+                .filter(|(_, w)| !out.iter().any(|s| s.text == *w))
                 .map(|(_, w)| (self.bm25_score(w, &query_bigrams), *w))
-                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
-            {
-                if best.0 > 0.0 {
-                    out.push(ContinuationSuggestion {
-                        source: "bm25",
-                        text: best.1.to_string(),
-                        score: best.0,
-                    });
-                }
+                .filter(|(s, _)| *s > 0.0)
+                .collect();
+            bm25.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            for (score, w) in bm25.into_iter().take(2) {
+                out.push(ContinuationSuggestion {
+                    source: "bm25",
+                    text: w.to_string(),
+                    score,
+                });
             }
         } else {
             // Sentence complete: common continuers present in the dictionary.
@@ -394,28 +399,36 @@ impl TextPredictor {
                 .filter(|c| self.freq_rank.contains_key(*c))
                 .collect();
             present.sort_by_key(|c| self.freq_rank.get(*c).copied().unwrap_or(usize::MAX));
-            if let Some(first) = present.first() {
+
+            // prob: top-3 connectors by frequency.
+            for c in present.iter().take(3) {
                 out.push(ContinuationSuggestion {
                     source: "prob",
-                    text: (*first).to_string(),
-                    score: 0.9,
+                    text: (*c).to_string(),
+                    score: 0.9 - out.len() as f32 * 0.05,
                 });
             }
-            if let Some(best) = present
+
+            // bm25: top-2 connectors by lexical overlap, distinct from prob.
+            let mut bm25: Vec<(f32, &str)> = present
                 .iter()
-                .filter(|c| **c != out.first().map(|s| s.text.as_str()).unwrap_or(""))
+                .filter(|c| !out.iter().any(|s| s.text == **c))
                 .map(|c| (self.bm25_score(c, &query_bigrams), *c))
-                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
-            {
-                if best.0 > 0.0 {
-                    out.push(ContinuationSuggestion {
-                        source: "bm25",
-                        text: best.1.to_string(),
-                        score: best.0,
-                    });
-                }
+                .filter(|(s, _)| *s > 0.0)
+                .collect();
+            bm25.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            for (score, w) in bm25.into_iter().take(2) {
+                out.push(ContinuationSuggestion {
+                    source: "bm25",
+                    text: w.to_string(),
+                    score,
+                });
             }
         }
+        // Dedupe (prob wins) and cap at 5.
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|s| seen.insert(s.text.clone()));
+        out.truncate(5);
         out
     }
 }
@@ -616,19 +629,49 @@ mod tests {
     #[test]
     fn continuation_has_prob_and_bm25_lines() {
         let p = predictor();
-        // Mid-word: complete "자전" → 자전거 (prob) and a bm25 line.
+        // Mid-word: complete "자전" → multiple distinct lines, including the
+        // top-frequency 자전거; the bare partial word itself is excluded.
         let mid = p.continuation_candidates("나는 자전");
         assert!(
-            mid.iter().any(|s| s.source == "prob" && s.text == "자전거"),
+            !mid.is_empty()
+                && mid.iter().any(|s| s.source == "prob" && s.text == "자전거"),
             "mid-word prob should complete 자전: {mid:?}"
         );
-        assert!(mid.iter().any(|s| s.source == "bm25"), "bm25 line present: {mid:?}");
-        // Complete sentence: falls back to a connector (prob always; bm25 only
+        assert!(
+            mid.len() >= 2,
+            "mid-word should suggest multiple lines: {mid:?}"
+        );
+        assert!(
+            !mid.iter().any(|s| s.text == "자전"),
+            "bare partial word must not be suggested: {mid:?}"
+        );
+        // Complete sentence: falls back to connectors (prob always; bm25 only
         // when a connector shares lexical bigrams with the sentence).
         let full = p.continuation_candidates("이제 시작하겠습니다 ");
         assert!(!full.is_empty() && full[0].source == "prob", "prob connector: {full:?}");
         // Empty draft → no suggestions.
         assert!(p.continuation_candidates("").is_empty());
+    }
+
+    #[test]
+    fn continuation_returns_multiple_distinct_lines() {
+        let p = predictor();
+        // "han" prefix has three longer matches → all suggested, none equals
+        // the bare partial word.
+        let out = p.continuation_candidates("나는 han");
+        let texts: Vec<&str> = out.iter().map(|s| s.text.as_str()).collect();
+        assert!(out.len() >= 3, "expected multiple lines: {out:?}");
+        let mut uniq: Vec<&str> = texts.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(uniq.len(), out.len(), "lines must be distinct: {out:?}");
+        assert!(
+            out.iter().any(|s| s.text == "handle")
+                && !texts.contains(&"han"),
+            "completes longer words, never the bare prefix: {out:?}"
+        );
+        // Never exceeds the 5-line cap.
+        assert!(out.len() <= 5);
     }
 
     /// Builds the index from the actual bundled wordfreq models and sanity-checks
