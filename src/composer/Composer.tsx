@@ -188,11 +188,10 @@ useEffect(() => {
     suggestTimer.current = setTimeout(() => {
       void invoke<ContinuationSuggestion[]>("get_continuation_suggestions", { text })
         .then((sugs) => {
-          // Keep any on-demand AI lines but refresh the local ones.
-          setSuggestions((prev) => [
-            ...sugs,
-            ...prev.filter((s) => s.source === "ai" && sugs.some((l) => l.text === s.text)),
-          ]);
+          // Refresh the local lines. Any AI lines are dropped: the draft has
+          // changed since they were fetched (this timer only fires after an
+          // edit), so they are stale.
+          setSuggestions(sugs);
         })
         .catch(() => {
           /* leave suggestions as-is */
