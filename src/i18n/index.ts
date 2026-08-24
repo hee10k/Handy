@@ -15,16 +15,22 @@ const localeModules = import.meta.glob<{ default: Record<string, unknown> }>(
   { eager: true },
 );
 
+// Tajagi ships ko + en only (soft-fork policy, per product decision). All other
+// bundled locales are unreachable: the language dropdown offers ko/en and any
+// non-ko/en system locale falls back to English. Keeping the upstream locale
+// files on disk is harmless — they are filtered out here.
+const APP_LANGUAGE_ALLOWLIST = ["en", "ko"];
+
 // Build resources from discovered locale files
 const resources: Record<string, { translation: Record<string, unknown> }> = {};
 for (const [path, module] of Object.entries(localeModules)) {
   const langCode = path.match(/\.\/locales\/(.+)\/translation\.json/)?.[1];
-  if (langCode) {
+  if (langCode && APP_LANGUAGE_ALLOWLIST.includes(langCode)) {
     resources[langCode] = { translation: module.default };
   }
 }
 
-// Build supported languages list from discovered locales + metadata
+// Build supported languages list from the (already ko/en-filtered) resources
 export const SUPPORTED_LANGUAGES = Object.keys(resources)
   .map((code) => {
     const meta = LANGUAGE_METADATA[code];
