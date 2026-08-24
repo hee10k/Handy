@@ -90,10 +90,27 @@ fn char_bigrams(s: &str) -> Vec<String> {
 
 /// Common Korean/English continuers used when the sentence is already complete
 /// (no in-progress word) so there is still a local "keep writing" suggestion.
-const CONTINUATION_CONNECTORS: &[&str] = &[
-    "그리고", "또한", "하지만", "그래서", "그런데", "다음으로", "반면에", "따라서", "and", "but",
-    "so", "also", "then", "next", "however", "therefore", "moreover",
+const KOREAN_CONNECTORS: &[&str] = &[
+    "그리고", "또한", "하지만", "그래서", "그런데", "다음으로", "반면에", "따라서",
 ];
+const ENGLISH_CONNECTORS: &[&str] = &[
+    "and", "but", "so", "also", "then", "next", "however", "therefore", "moreover",
+];
+
+/// Dominant script of a draft: Korean when it contains any Hangul syllable,
+/// otherwise English (used to pick language-appropriate connectors).
+fn draft_script(text: &str) -> Script {
+    if text.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c)) {
+        Script::Ko
+    } else {
+        Script::En
+    }
+}
+
+enum Script {
+    Ko,
+    En,
+}
 
 /// True when `token` == `suggestion` + exactly one particle suffix (non-empty).
 fn is_particle_suffix(token: &str, suggestion: &str) -> bool {
@@ -356,8 +373,6 @@ impl TextPredictor {
         let query_bigrams = char_bigrams(&lower);
         let mut out: Vec<ContinuationSuggestion> = Vec::new();
 
-        let frequency = |w: &str| self.freq_rank.get(w).copied().unwrap_or(usize::MAX);
-
         if !prefix.is_empty() {
             // Strictly-longer prefix completions, by frequency.
             let mut matches: Vec<(usize, &str)> = self
@@ -367,12 +382,25 @@ impl TextPredictor {
                 .collect();
             matches.sort_by_key(|(r, w)| (*r, std::cmp::Reverse(w.chars().count())));
 
+            // Sparse-prefix fallback: when the partial word has fewer than two
+            // longer completions (common for Korean), also offer the bare word
+            // itself as a *commit* completion (the frontend replaces the
+            // partial, so this closes the word with a trailing space rather
+            // than appending a duplicate). Guarantees >1 line for sparse
+            // prefixes without re-suggesting the word when richer options exist.
+            let is_dict_word = self.freq_rank.contains_key(prefix.as_str());
+            let mut prob_candidates: Vec<&str> = matches.iter().map(|(_, w)| *w).collect();
+            if is_dict_word && prob_candidates.len() < 2 && !prob_candidates.contains(&prefix.as_str()) {
+                prob_candidates.push(prefix.as_str());
+            }
+
             // prob: top-3 by frequency.
-            for (freq_rank, w) in matches.iter().take(3) {
+            for w in prob_candidates.iter().take(3) {
+                let rank = self.freq_rank.get(*w).copied().unwrap_or(usize::MAX);
                 out.push(ContinuationSuggestion {
                     source: "prob",
                     text: (*w).to_string(),
-                    score: 1.0 - (*freq_rank as f32 / 1_000_000.0),
+                    score: 1.0 - (rank as f32 / 1_000_000.0),
                 });
             }
 
@@ -392,12 +420,27 @@ impl TextPredictor {
                 });
             }
         } else {
-            // Sentence complete: common continuers present in the dictionary.
-            let mut present: Vec<&str> = CONTINUATION_CONNECTORS
+            // Sentence complete: continuers in the draft's script (no cross-script
+            // mixing — an English draft never sees Korean connectors). Falls
+            // back to the other script only when the dict has none of the
+            // preferred ones.
+            let (primary, fallback) = match draft_script(&lower) {
+                Script::Ko => (&KOREAN_CONNECTORS[..], &ENGLISH_CONNECTORS[..]),
+                Script::En => (&ENGLISH_CONNECTORS[..], &KOREAN_CONNECTORS[..]),
+            };
+            let mut present: Vec<&str> = primary
                 .iter()
                 .copied()
                 .filter(|c| self.freq_rank.contains_key(*c))
                 .collect();
+            if present.is_empty() {
+                present = fallback
+                    .iter()
+                    .copied()
+                    .filter(|c| self.freq_rank.contains_key(*c))
+                    .collect();
+            }
+            // Rank within the chosen script by frequency.
             present.sort_by_key(|c| self.freq_rank.get(*c).copied().unwrap_or(usize::MAX));
 
             // prob: top-3 connectors by frequency.
@@ -707,5 +750,29 @@ mod tests {
         assert!(ko_inflected.is_none() || ko_inflected.as_deref() == Some("서울은"));
         let ko_hits = p.complete_prefix("자전", 5, true);
         assert!(ko_hits.iter().any(|w| w.contains("자전")));
+        // The reported issue: typing should surface multiple continuation lines.
+        let mid = p.continuation_candidates("나는 자전");
+        assert!(
+            mid.iter().any(|s| s.source == "prob" && s.text == "자전거"),
+            "mid-word completes to 자전거: {mid:?}"
+        );
+        assert!(mid.len() >= 2, "mid-word yields multiple lines: {mid:?}");
+        let mut mset: Vec<String> = mid.iter().map(|s| s.text.clone()).collect();
+        mset.sort();
+        mset.dedup();
+        assert_eq!(mset.len(), mid.len(), "mid lines distinct: {mid:?}");
+        // A common prefix yields multiple distinct lines (worst case the bare
+        // word as a sparse-prefix commit, which is still a valid completion).
+        let today = p.continuation_candidates("오늘");
+        let mut tset: Vec<String> = today.iter().map(|s| s.text.clone()).collect();
+        tset.sort();
+        tset.dedup();
+        assert_eq!(tset.len(), today.len(), "today lines distinct: {today:?}");
+        assert!(today.len() >= 2, "늘 prefix yields multiple lines: {today:?}");
+        assert!(today.len() <= 5, "capped at 5: {today:?}");
+        // English sentence end → connector lines.
+        let ends = p.continuation_candidates("I want to go to the park ");
+        assert!(!ends.is_empty(), "sentence end gives connectors: {ends:?}");
+        eprintln!("KOR mid={mid:?}\nEN end={ends:?}");
     }
 }

@@ -7,7 +7,7 @@
 //! English renders English, Prompt English turns raw notes into a well-formed
 //! English prompt, and Custom applies a user instruction.
 
-use crate::llm_client::{send_chat_completion, send_chat_completion_stream, ChatStreamError};
+use crate::llm_client::{send_chat_completion_stream, ChatStreamError};
 use crate::secret;
 use crate::settings::{get_settings, PostProcessProvider};
 use futures_util::stream::BoxStream;
