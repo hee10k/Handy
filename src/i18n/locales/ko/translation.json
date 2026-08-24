@@ -765,6 +765,10 @@
     "closeTitle": "컴포저 닫기",
     "keysHint": "Shift+Enter 줄바꿈",
     "openSettingsTitle": "설정 열기",
-    "quickAriaLabel": "퀵 액션"
+    "quickAriaLabel": "퀵 액션",
+    "correctionLabel": "맞춤법 보정",
+    "correctionTitle": "보정된 문장 적용",
+    "completionsAria": "자동완성 추천",
+    "completionKeyHint": "Tab"
   }
 }

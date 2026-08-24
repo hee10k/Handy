@@ -765,6 +765,10 @@
     "closeTitle": "Close composer",
     "keysHint": "Shift+Enter for a new line",
     "openSettingsTitle": "Open settings",
-    "quickAriaLabel": "Quick actions"
+    "quickAriaLabel": "Quick actions",
+    "correctionLabel": "Correction",
+    "correctionTitle": "Apply the corrected sentence",
+    "completionsAria": "Autocomplete suggestions",
+    "completionKeyHint": "Tab"
   }
 }

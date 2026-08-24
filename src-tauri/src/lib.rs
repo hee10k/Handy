@@ -21,6 +21,7 @@ mod secret;
 mod settings;
 mod shortcut;
 mod signal_handle;
+mod text_predict;
 mod transcription_coordinator;
 mod transform;
 mod tray;
@@ -183,6 +184,30 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
     app_handle.manage(tray::CurrentTrayIconState::new());
+    app_handle.manage(text_predict::PredictorState::new());
+
+    // Warm the local typo-correction/autocomplete index in the background so the
+    // composer's predictions are ready by the time the user opens it (building
+    // SymSpell over ~150k words takes a few seconds on first load).
+    {
+        let app = app_handle.clone();
+        std::thread::spawn(move || {
+            let resolve = |rel: &str| {
+                app.path()
+                    .resolve(rel, tauri::path::BaseDirectory::Resource)
+                    .map_err(|e| format!("cannot resolve {rel}: {e}"))
+            };
+            let (Ok(ko), Ok(en)) =
+                (resolve("models/small_ko.txt.zst"), resolve("models/large_en.txt.zst"))
+            else {
+                return;
+            };
+            let state = app.state::<text_predict::PredictorState>();
+            if let Err(e) = text_predict::load_predictor(&ko, &en, &state) {
+                log::warn!("text predictor warm-up failed: {e}");
+            }
+        });
+    }
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
@@ -727,6 +752,8 @@ pub fn run(cli_args: CliArgs) {
             commands::composer::commit_composer,
             commands::composer::cancel_composer,
             commands::composer::get_foreground_app_category,
+            text_predict::correct_text,
+            text_predict::complete_prefix,
             commands::transform::list_transform_modes,
             commands::transform::run_transform,
             commands::transform::cancel_transform,

@@ -105,6 +105,14 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
   // 퀵 액션 (ticket 09): 사용자 할당 슬롯 (1..10 -> mode) + 포그라운드 앱 카테고리.
   const [quickSlots, setQuickSlots] = useState<QuickActionSlot[]>([]);
   const [appCategory, setAppCategory] = useState<AppCategory>("other");
+  // Local typo correction + inline autocomplete (offline, wordfreq dictionaries).
+  // correction: corrected sentence rendered below the input; completions: the
+  // trailing partial word's dictionary suggestions.
+  const [correction, setCorrection] = useState<string | null>(null);
+  const [completions, setCompletions] = useState<string[]>([]);
+  const [activeCompletion, setActiveCompletion] = useState(0);
+  const correctionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const completionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Refs for values the mount-once event listeners must read without stale
   // closures. `streaming` guards against stray deltas after done/error/cancel;
@@ -154,7 +162,53 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
     };
   }, []);
 
-  // Voice-while-composing: when a transcription completes while this composer is
+  // Local typo correction + inline autocomplete, debounced on the draft text.
+// Skipped mid-stream and while the IME composes (the draft isn't final then).
+// Correction: ask for the corrected sentence once the draft quiets down.
+// Completion: only for a trailing, incomplete (no-space) partial word ≥2 chars.
+useEffect(() => {
+  if (streaming || isComposing) {
+    if (correctionTimer.current) clearTimeout(correctionTimer.current);
+    if (completionTimer.current) clearTimeout(completionTimer.current);
+    return;
+  }
+  const trailing = trailingToken(text);
+  if (completionTimer.current) clearTimeout(completionTimer.current);
+  if (trailing.length >= 2 && !text.endsWith(" ") && !text.endsWith("\n")) {
+    completionTimer.current = setTimeout(() => {
+      void invoke<string[]>("complete_prefix", { prefix: trailing, limit: 5 })
+        .then((hits) => {
+          setCompletions(hits.filter((w) => w.toLowerCase() !== trailing.toLowerCase()));
+          setActiveCompletion(0);
+        })
+        .catch(() => setCompletions([]));
+    }, 150);
+  } else {
+    setCompletions([]);
+  }
+  if (correctionTimer.current) clearTimeout(correctionTimer.current);
+  if (text.trim().length > 0) {
+    correctionTimer.current = setTimeout(() => {
+      void invoke<string | null>("correct_text", { text })
+        .then((c) => setCorrection(c ?? null))
+        .catch(() => setCorrection(null));
+    }, 450);
+  } else {
+    setCorrection(null);
+  }
+  return () => {
+    if (correctionTimer.current) clearTimeout(correctionTimer.current);
+    if (completionTimer.current) clearTimeout(completionTimer.current);
+  };
+}, [text, streaming, isComposing]);
+
+// The partial word currently being typed (text after the last whitespace).
+const trailingToken = (value: string) => {
+  const parts = value.split(/\s+/);
+  return parts.length ? (parts[parts.length - 1] ?? "") : "";
+};
+
+// Voice-while-composing: when a transcription completes while this composer is
   // the focused foreground window, the backend delivers it here (rather than an
   // OS clipboard paste) so it lands deterministically in the draft. Appended to
   // the textarea and mirrored into the revision stack (ignore mid-transform).
@@ -223,6 +277,8 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
           setIsComposing(false);
           dispatchRevision({ type: "reset" });
           setShowDiff(false);
+          setCorrection(null);
+          setCompletions([]);
           // Re-classify the foreground app each time the composer opens so the
           // quick buttons reflect the current context (ticket 09).
           void invoke<string>("get_foreground_app_category")
@@ -338,6 +394,27 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
       preferred.find((m) => quickSlots.some((s) => s.mode === m)) ?? null
     );
   }, [quickSlots, appCategory]);
+
+  // Accept an inline autocomplete: replace the trailing partial word with the
+  // chosen dictionary word + a trailing space, and mirror it into the revision.
+  const acceptCompletion = (word: string) => {
+    const trailing = trailingToken(text);
+    const prefix = trailing ? text.slice(0, text.length - trailing.length) : text;
+    const next = `${prefix}${word} `;
+    setText(next);
+    dispatchRevision({ type: "replace-current", text: next });
+    setCompletions([]);
+    textareaRef.current?.focus();
+  };
+
+  // Apply the shown corrected sentence in place of the draft.
+  const applyCorrection = () => {
+    if (!correction) return;
+    setText(correction);
+    dispatchRevision({ type: "replace-current", text: correction });
+    setCorrection(null);
+    textareaRef.current?.focus();
+  };
 
   const handleInstructionKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.nativeEvent.isComposing) return; // let the IME finalize the instruction
@@ -470,8 +547,21 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
       commit();
       return;
     }
+    if (e.key === "Tab") {
+      // Accept the top inline completion; no completions → default Tab behavior.
+      if (completions.length > 0 && !streaming) {
+        e.preventDefault();
+        acceptCompletion(completions[activeCompletion]);
+        return;
+      }
+      return; // let the browser default handle focus traversal
+    }
     if (e.key === "Escape") {
       e.preventDefault();
+      if (completions.length > 0) {
+        setCompletions([]); // dismiss the dropdown first; second Esc closes
+        return;
+      }
       if (streaming) cancelInFlight(); // Esc cancels only the in-flight request
       else cancel(); // nothing streaming: close the composer (ticket-02 path)
     }
@@ -623,6 +713,40 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
         readOnly={streaming}
         spellCheck={false}
       />
+      {completions.length > 0 && !streaming && (
+        <div
+          className="composer__completions"
+          role="listbox"
+          aria-label={t("composer.completionsAria")}
+        >
+          {completions.map((c, idx) => (
+            <button
+              key={c}
+              type="button"
+              className={`composer__completion ${
+                idx === activeCompletion ? "composer__completion--active" : ""
+              }`}
+              onClick={() => acceptCompletion(c)}
+            >
+              <span className="composer__completion-tag">{t("composer.completionKeyHint")}</span>
+              {c}
+            </button>
+          ))}
+        </div>
+      )}
+      {correction && !streaming && (
+        <button
+          type="button"
+          className="composer__correction"
+          onClick={applyCorrection}
+          title={t("composer.correctionTitle")}
+        >
+          <span className="composer__correction-label">
+            {t("composer.correctionLabel")}
+          </span>
+          {correction}
+        </button>
+      )}
       {showDiff && (
         <div className="composer__diff" role="region" aria-label="diff">
           <div className="composer__diff-body">
