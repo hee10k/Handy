@@ -242,7 +242,7 @@ export function keysToHangul(keys: string): string {
 }
 ```
 
-- [ ] **Step 5: 왕복 테스트 — 실측 검증된 20 샘플** (각 키 벡터는 실제 엔진 실행 결과)
+- [ ] **Step 5: 왕복 테스트 — 실측 검증된 30 샘플** (각 키 벡터는 실제 엔진 실행 결과, 2026-10-08 eval 30/30 PASS)
 
 ```ts
 const ROUNDTRIP: Array<[string, string]> = [
@@ -266,6 +266,16 @@ const ROUNDTRIP: Array<[string, string]> = [
   ["읊다", "dmfvek"],
   ["갈색", "rkftor"],
   ["사과", "tkrhk"],
+  ["봄", "qha"],
+  ["여름", "dufma"],
+  ["겨울", "rudnf"],
+  ["기차", "rlck"],
+  ["커피", "zjvl"],
+  ["바다", "qkek"],
+  ["달", "ekf"],
+  ["별", "quf"],
+  ["산", "tks"],
+  ["안녕 하세요", "dkssud gktpdy"],
 ];
 
 describe("roundtrip", () => {
@@ -343,6 +353,12 @@ if (chunk.keys.length === 0 && (e.key === "1" || e.key === "2") && (e.metaKey ||
   setChunk((c) => ({ keys: [...c.keys, e.key], pending: false }));
   return;
 }
+// Esc: 구가 있으면 폐기 → EMPTY; 없으면 기존 핸들러(폐기/닫기)로 진행
+if (e.key === "Escape" && chunk.keys.length > 0) {
+  e.preventDefault();
+  setChunk(EMPTY_CHUNK);
+  return;
+}
 ```
 
 - [ ] **Step 3: commitChunk — 초안 append** (기존 revision 정책 `replace-current` 따름, `applyPrediction` 와 동일 패턴)
@@ -362,6 +378,8 @@ const commitChunk = (lang: "ko" | "en") => {
 ```
 
 - [ ] **Step 4: Cmd/Ctrl+Enter → 최종 커밋** (기존 `commit` 재사용; 기존에 Enter 에 묶였던 commit 은 Enter 가 이중 입력에 쓰이므로 Cmd/Ctrl+Enter 로 이동)
+
+> **기존 코드 제거 필수**: handleKeyDown 의 `if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (streaming) return; commit(); return; }` 블록은 이중 입력의 Enter 인터셉트(빈 구 no-op)와 겹치므로 **삭제**한다. Enter 는 이제 구 확정 흐름만, 최종 커밋은 Cmd/Ctrl+Enter 만 담당한다.
 
 ```ts
 if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
