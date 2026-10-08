@@ -18,11 +18,11 @@
 //! app entitlements file and re-sign. Until then the default
 //! `SettingsApiKeyStore` keeps dev builds functional.
 
-use crate::settings::{get_settings, write_settings};
 use crate::settings::SecretMap;
-use log::warn;
+use crate::settings::{get_settings, write_settings};
 #[cfg(feature = "keyring-store")]
 use log::info;
+use log::warn;
 use std::collections::HashMap;
 use std::fmt;
 use tauri::AppHandle;

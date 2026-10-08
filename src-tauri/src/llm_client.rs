@@ -705,19 +705,19 @@ pub async fn send_chat_completion_stream(
         Some(level) => reasoning_params(provider, level),
     };
 
-let mut request_body = ChatCompletionRequest {
-            model: model.to_string(),
-            messages,
-            stream: true,
-            response_format: None,
-            reasoning,
-        };
-        debug!(
-            "Streaming chat completion reasoning fields: {:?}",
-            request_body.reasoning
-        );
+    let mut request_body = ChatCompletionRequest {
+        model: model.to_string(),
+        messages,
+        stream: true,
+        response_format: None,
+        reasoning,
+    };
+    debug!(
+        "Streaming chat completion reasoning fields: {:?}",
+        request_body.reasoning
+    );
 
-        let mut response = client
+    let mut response = client
         .post(&url)
         .json(&request_body)
         .send()
@@ -740,10 +740,9 @@ let mut request_body = ChatCompletionRequest {
     {
         // Read and discard the body so the connection is released (it can quote
         // secrets/content, so it is never propagated).
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|e| report_reqwest_error("Failed to read reasoning rejection response", &e));
+        let error_text = response.text().await.unwrap_or_else(|e| {
+            report_reqwest_error("Failed to read reasoning rejection response", &e)
+        });
         info!(
             "Streaming endpoint rejected request with reasoning disabled (status {}): {}. Retrying without reasoning fields",
             status, error_text
@@ -755,7 +754,9 @@ let mut request_body = ChatCompletionRequest {
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| ChatStreamError::Transport(report_reqwest_error("HTTP retry failed", &e)))?;
+            .map_err(|e| {
+                ChatStreamError::Transport(report_reqwest_error("HTTP retry failed", &e))
+            })?;
         status = response.status();
         debug!(
             "Streaming chat completion retry response received with status {} over {:?} from {}",
@@ -789,44 +790,47 @@ let mut request_body = ChatCompletionRequest {
     // (byte_stream, pending-line buffer, done flag)
     let seed = (byte_stream, Vec::<u8>::new(), false);
 
-    Ok(unfold(seed, |(mut stream, mut buffer, mut done)| async move {
-        if done {
-            return None;
-        }
-        loop {
-            match stream.next().await {
-                Some(Ok(chunk)) => {
-                    let (deltas, stream_done) = sse_extract_deltas(&mut buffer, &chunk);
-                    if stream_done {
-                        done = true;
+    Ok(unfold(
+        seed,
+        |(mut stream, mut buffer, mut done)| async move {
+            if done {
+                return None;
+            }
+            loop {
+                match stream.next().await {
+                    Some(Ok(chunk)) => {
+                        let (deltas, stream_done) = sse_extract_deltas(&mut buffer, &chunk);
+                        if stream_done {
+                            done = true;
+                        }
+                        if !deltas.is_empty() {
+                            return Some((Ok(deltas), (stream, buffer, done)));
+                        }
+                        if done {
+                            return None;
+                        }
+                        // No complete deltas yet and not done: keep reading.
                     }
-                    if !deltas.is_empty() {
-                        return Some((Ok(deltas), (stream, buffer, done)));
+                    Some(Err(e)) => {
+                        let err = ChatStreamError::Transport(report_reqwest_error(
+                            "Streaming response read failed",
+                            &e,
+                        ));
+                        return Some((Err(err), (stream, buffer, done)));
                     }
-                    if done {
-                        return None;
+                    None => {
+                        // Producer ended without an explicit [DONE]; flush a residual
+                        // tail if a partial line remained.
+                        let residual = String::from_utf8_lossy(&buffer).trim().to_string();
+                        if residual.is_empty() {
+                            return None;
+                        }
+                        return Some((Ok(vec![residual]), (stream, Vec::new(), true)));
                     }
-                    // No complete deltas yet and not done: keep reading.
-                }
-                Some(Err(e)) => {
-                    let err = ChatStreamError::Transport(report_reqwest_error(
-                        "Streaming response read failed",
-                        &e,
-                    ));
-                    return Some((Err(err), (stream, buffer, done)));
-                }
-                None => {
-                    // Producer ended without an explicit [DONE]; flush a residual
-                    // tail if a partial line remained.
-                    let residual = String::from_utf8_lossy(&buffer).trim().to_string();
-                    if residual.is_empty() {
-                        return None;
-                    }
-                    return Some((Ok(vec![residual]), (stream, Vec::new(), true)));
                 }
             }
-        }
-    }))
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -1030,7 +1034,10 @@ mod tests {
 
     #[test]
     fn reasoning_level_openrouter_uses_nested_object() {
-        let params = reasoning_params(&provider("openrouter", "https://openrouter.ai/api/v1"), "medium");
+        let params = reasoning_params(
+            &provider("openrouter", "https://openrouter.ai/api/v1"),
+            "medium",
+        );
         let json = request_json(params);
         assert!(json.get("reasoning_effort").is_none());
         assert_eq!(json["reasoning"]["effort"], "medium");
@@ -1106,7 +1113,10 @@ mod tests {
         assert!(!done1);
 
         let (d2, _done2) = sse_chunk(&mut pending, &full[20..]);
-        assert_eq!(d2, vec!["Hel".to_string(), "lo ".to_string(), "world".to_string()]);
+        assert_eq!(
+            d2,
+            vec!["Hel".to_string(), "lo ".to_string(), "world".to_string()]
+        );
         // The trailing blank line yields no further delta and nothing is left.
         assert!(pending.is_empty());
     }
@@ -1233,9 +1243,7 @@ mod tests {
 
     /// Serve exactly two requests: a 400 (reasoning-field rejection) then a
     /// 200 SSE body. Returns the base URL and the streamed delta.
-    async fn serve_reject_then_sse(
-        first_delta: &str,
-    ) -> (String, String) {
+    async fn serve_reject_then_sse(first_delta: &str) -> (String, String) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let reject = format!(
@@ -1247,8 +1255,10 @@ mod tests {
             "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{}\"}}}}]}}\n\ndata: [DONE]\n\n",
             first_delta
         );
-        let ok =
-            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse_body}", sse_body.len());
+        let ok = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse_body}",
+            sse_body.len()
+        );
 
         tokio::spawn(async move {
             // First connection: reject with 400.

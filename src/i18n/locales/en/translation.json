@@ -766,14 +766,14 @@
     "keysHint": "Shift+Enter for a new line",
     "openSettingsTitle": "Open settings",
     "quickAriaLabel": "Quick actions",
-    "correctionLabel": "Correction",
-    "correctionTitle": "Apply the corrected sentence",
-    "suggestAria": "Continuation suggestions",
-    "suggestTitle": "Continue…",
-    "suggestSrcAi": "AI",
-    "suggestSrcLocal": "Local",
-    "aiSuggest": "AI suggestions",
-    "aiLoading": "Thinking…",
-    "aiSuggestTitle": "Fetch AI continuations for the current sentence"
+    "predictionsAria": "Writing suggestions",
+    "predictionsTitle": "Writing suggestions",
+    "predictionSrcProb": "Local",
+    "predictionSrcBm25": "BM25",
+    "predictionSrcProvider": "AI",
+    "requestAiPredictions": "AI suggestions",
+    "aiPredictLoading": "Predicting…",
+    "correctionLabel": "Corrected",
+    "correctionTitle": "Apply local spelling correction"
   }
 }

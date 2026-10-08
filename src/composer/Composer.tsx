@@ -64,11 +64,15 @@ interface QuickActionSlot {
   mode: string; // transform mode id
 }
 
-// One line of the composer's bottom continuation panel. `source` is
-// "prob" | "bm25" (local, off the bundled wordfreq dictionary) or "ai"
-// (on-demand LLM continuation from the transform provider).
-interface ContinuationSuggestion {
-  source: "prob" | "bm25" | "ai";
+// All candidates continue the current draft: local candidates replace a partial
+// trailing word, while AI candidates append a phrase or sentence.
+interface SentencePrediction {
+  source: "prob" | "bm25" | "provider";
+  text: string;
+}
+
+interface LocalContinuation {
+  source: "prob" | "bm25";
   text: string;
   score: number;
 }
@@ -99,7 +103,7 @@ const Composer: React.FC = () => {
   const [text, setText] = useState("");
   const [originalText, setOriginalText] = useState(""); // pre-transform snapshot, restored on error/cancel
   const [modes, setModes] = useState<TransformModeInfo[]>([]);
-const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
+  const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
   const [mode, setMode] = useState<string | null>(null);
   const [instruction, setInstruction] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -114,14 +118,22 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
   // 퀵 액션 (ticket 09): 사용자 할당 슬롯 (1..10 -> mode) + 포그라운드 앱 카테고리.
   const [quickSlots, setQuickSlots] = useState<QuickActionSlot[]>([]);
   const [appCategory, setAppCategory] = useState<AppCategory>("other");
-  // Local typo correction (offline, wordfreq) + multi-source continuation panel.
-  // correction: corrected sentence rendered below the input. suggestions: the
-  // bottom panel's one-line options (prob/bm25 local + optional ai on demand).
-  const [correction, setCorrection] = useState<string | null>(null);
-  const [suggestions, setSuggestions] = useState<ContinuationSuggestion[]>([]);
+  // Local dictionary continuations arrive automatically; configured models run
+  // only after an explicit AI request.
+  const [localPredictions, setLocalPredictions] = useState<
+    SentencePrediction[]
+  >([]);
+  const [providerPredictions, setProviderPredictions] = useState<
+    SentencePrediction[]
+  >([]);
   const [aiLoading, setAiLoading] = useState(false);
-  const correctionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [hasPredictionProvider, setHasPredictionProvider] = useState(false);
+  const [correction, setCorrection] = useState<string | null>(null);
+  const correctionTimer = useRef<ReturnType<typeof setTimeout>>();
+  const correctionRequestRef = useRef(0);
+  const localPredictionTimer = useRef<ReturnType<typeof setTimeout>>();
+  const localPredictionRequestRef = useRef(0);
+  const providerPredictionRequestRef = useRef(0);
 
   // Refs for values the mount-once event listeners must read without stale
   // closures. `streaming` guards against stray deltas after done/error/cancel;
@@ -155,68 +167,116 @@ const [savedPrompts, setSavedPrompts] = useState<SavedInstruction[]>([]);
     };
   }, []);
 
-  // Load the user's saved instructions (settings `post_process_prompts`) so the
-  // Custom mode can select one instead of typing fresh (Spec-8).
+  // Load saved instructions and whether the configured provider can generate
+  // optional AI rewrites. Local candidates never depend on this setting.
   useEffect(() => {
     let disposed = false;
-    void invoke<{ post_process_prompts?: SavedInstruction[] }>("get_app_settings")
+    void invoke<{
+      post_process_prompts?: SavedInstruction[];
+      post_process_provider_id?: string;
+      post_process_models?: Record<string, string>;
+    }>("get_app_settings")
       .then((settings) => {
-        if (!disposed) setSavedPrompts(settings?.post_process_prompts ?? []);
+        if (disposed) return;
+        setSavedPrompts(settings.post_process_prompts ?? []);
+        const providerId = settings.post_process_provider_id;
+        setHasPredictionProvider(
+          Boolean(
+            providerId && settings.post_process_models?.[providerId]?.trim(),
+          ),
+        );
       })
       .catch(() => {
-        // No saved prompts; the Custom mode falls back to inline typing.
+        if (!disposed) setHasPredictionProvider(false);
       });
     return () => {
       disposed = true;
     };
   }, []);
 
-  // Local typo correction + continuation suggestions, debounced on the draft.
-// Skipped mid-stream and while the IME composes (the draft isn't final then).
-// Correction: corrected sentence once the draft quiets down. Suggestions: the
-// local prob/bm25 lines for the bottom panel (offline, instant). AI lines are
-// only fetched on request (button), never automatically.
-useEffect(() => {
-  if (streaming || isComposing) {
-    if (correctionTimer.current) clearTimeout(correctionTimer.current);
-    if (suggestTimer.current) clearTimeout(suggestTimer.current);
-    return;
-  }
-  if (suggestTimer.current) clearTimeout(suggestTimer.current);
-  // Local lines always: prob/bm25 continuation of the current draft.
-  if (text.trim().length > 0) {
-    suggestTimer.current = setTimeout(() => {
-      void invoke<ContinuationSuggestion[]>("get_continuation_suggestions", { text })
-        .then((sugs) => {
-          // Refresh the local lines. Any AI lines are dropped: the draft has
-          // changed since they were fetched (this timer only fires after an
-          // edit), so they are stale.
-          setSuggestions(sugs);
+  // Local probability/BM25 continuations are the default: no API, no network,
+  // and requested only after a short typing pause.
+  useEffect(() => {
+    providerPredictionRequestRef.current += 1;
+    setProviderPredictions([]);
+    setAiLoading(false);
+    const requestId = ++localPredictionRequestRef.current;
+    clearTimeout(localPredictionTimer.current);
+    setLocalPredictions([]);
+    if (streaming || isComposing || !text.trim()) return;
+    localPredictionTimer.current = setTimeout(() => {
+      void invoke<LocalContinuation[]>("get_continuation_suggestions", { text })
+        .then((suggestions) => {
+          if (localPredictionRequestRef.current !== requestId) return;
+          const probability = suggestions.find(
+            (item) => item.source === "prob",
+          );
+          const bm25 = suggestions.find((item) => item.source === "bm25");
+          setLocalPredictions(
+            [probability, bm25]
+              .filter((item): item is LocalContinuation => Boolean(item))
+              .map(({ source, text }) => ({ source, text })),
+          );
         })
         .catch(() => {
-          /* leave suggestions as-is */
+          if (localPredictionRequestRef.current === requestId)
+            setLocalPredictions([]);
         });
-    }, 250);
-  } else {
-    setSuggestions([]);
-  }
-  if (correctionTimer.current) clearTimeout(correctionTimer.current);
-  if (text.trim().length > 0) {
+    }, 150);
+    return () => clearTimeout(localPredictionTimer.current);
+  }, [text, streaming, isComposing]);
+
+  // A local spelling pass exposes a reversible correction without changing the
+  // draft until the user explicitly selects it.
+  useEffect(() => {
+    const requestId = ++correctionRequestRef.current;
+    clearTimeout(correctionTimer.current);
+    setCorrection(null);
+    if (streaming || isComposing || !text.trim()) return;
     correctionTimer.current = setTimeout(() => {
       void invoke<string | null>("correct_text", { text })
-        .then((c) => setCorrection(c ?? null))
-        .catch(() => setCorrection(null));
+        .then((value) => {
+          if (correctionRequestRef.current === requestId) setCorrection(value);
+        })
+        .catch(() => {
+          if (correctionRequestRef.current === requestId) setCorrection(null);
+        });
     }, 450);
-  } else {
-    setCorrection(null);
-  }
-  return () => {
-    if (correctionTimer.current) clearTimeout(correctionTimer.current);
-    if (suggestTimer.current) clearTimeout(suggestTimer.current);
-  };
-}, [text, streaming, isComposing]);
+    return () => clearTimeout(correctionTimer.current);
+  }, [text, streaming, isComposing]);
 
-// Voice-while-composing: when a transcription completes while this composer is
+  const requestProviderPredictions = () => {
+    const requestId = ++providerPredictionRequestRef.current;
+    const draft = text.trim();
+    if (!draft || !hasPredictionProvider || streaming || isComposing) return;
+    setAiLoading(true);
+    setProviderPredictions([]);
+    void invoke<string[]>("suggest_llm_continuations", {
+      text: draft,
+      count: 3,
+    })
+      .then((sentences) => {
+        if (providerPredictionRequestRef.current !== requestId) return;
+        const seen = new Set<string>();
+        setProviderPredictions(
+          sentences
+            .filter((sentence) =>
+              seen.has(sentence) ? false : (seen.add(sentence), true),
+            )
+            .map((text) => ({ source: "provider", text })),
+        );
+      })
+      .catch(() => {
+        if (providerPredictionRequestRef.current === requestId)
+          setProviderPredictions([]);
+      })
+      .finally(() => {
+        if (providerPredictionRequestRef.current === requestId)
+          setAiLoading(false);
+      });
+  };
+
+  // Voice-while-composing: when a transcription completes while this composer is
   // the focused foreground window, the backend delivers it here (rather than an
   // OS clipboard paste) so it lands deterministically in the draft. Appended to
   // the textarea and mirrored into the revision stack (ignore mid-transform).
@@ -255,7 +315,12 @@ useEffect(() => {
           setText((t) => t + e.payload.delta);
         }),
         listen<TransformDonePayload>("transform-done", (e) => {
-          if (disposed || !streamingRef.current || e.payload.mode !== modeRef.current) return;
+          if (
+            disposed ||
+            !streamingRef.current ||
+            e.payload.mode !== modeRef.current
+          )
+            return;
           streamingRef.current = false;
           setStreaming(false);
           setError(null);
@@ -285,13 +350,16 @@ useEffect(() => {
           setIsComposing(false);
           dispatchRevision({ type: "reset" });
           setShowDiff(false);
-          setCorrection(null);
-          setSuggestions([]);
+          setLocalPredictions([]);
+          setProviderPredictions([]);
           // Re-classify the foreground app each time the composer opens so the
           // quick buttons reflect the current context (ticket 09).
           void invoke<string>("get_foreground_app_category")
             .then((c) => {
-              if (!disposed && (c === "browser" || c === "editor" || c === "mail"))
+              if (
+                !disposed &&
+                (c === "browser" || c === "editor" || c === "mail")
+              )
                 setAppCategory(c);
               else setAppCategory("other");
             })
@@ -398,81 +466,25 @@ useEffect(() => {
   const suggestedMode = useMemo(() => {
     const preferred = CATEGORY_PREFERRED[appCategory] ?? [];
     if (appCategory === "other" || preferred.length === 0) return null;
-    return (
-      preferred.find((m) => quickSlots.some((s) => s.mode === m)) ?? null
-    );
+    return preferred.find((m) => quickSlots.some((s) => s.mode === m)) ?? null;
   }, [quickSlots, appCategory]);
 
-  // Iteratively split the draft on whitespace (kept simple for small drafts).
-  const trailingToken = (value: string) => {
-    const m = value.match(/\s(\S+)$/);
-    if (m) return m[1] ?? "";
-    return value.trim();
-  };
-
-  // Apply a chosen continuation line, mirroring it into the revision so it
-  // participates in undo/redo. When the suggestion completes the trailing
-  // partial word (mid-word prob/bm25 lines), it REPLACES that partial token
-  // instead of duplicating it (e.g. "자전" + "자전거" → "자전거"). Otherwise it
-  // is appended with a separating space (connector / AI continuation lines).
-  const applySuggestion = (s: ContinuationSuggestion) => {
-    const hasTrailing = text.length > 0 && !/\s$/.test(text);
-    const trailing = hasTrailing ? trailingToken(text) : "";
-    let next: string;
-    if (
-      trailing.length > 0 &&
-      s.text.toLowerCase().startsWith(trailing.toLowerCase())
-    ) {
-      // Mid-word completion: replace the partial token with the full word.
-      const prefix = text.slice(0, text.length - trailing.length);
-      next = `${prefix}${s.text} `;
-    } else if (hasTrailing) {
-      next = `${text} ${s.text} `;
-    } else {
-      next = `${text}${s.text} `;
-    }
+  // A local candidate completes the trailing word; an AI candidate always
+  // appends to the current draft exactly as returned by the provider.
+  const applyPrediction = (prediction: SentencePrediction) => {
+    const next =
+      prediction.source === "provider"
+        ? `${text}${text.endsWith(" ") || text.endsWith("\n") ? "" : " "}${prediction.text} `
+        : text.endsWith(" ") || text.endsWith("\n")
+          ? `${text}${prediction.text} `
+          : `${text.replace(/\S+$/, "")}${prediction.text} `;
     setText(next);
     dispatchRevision({ type: "replace-current", text: next });
-    setSuggestions([]);
+    setLocalPredictions([]);
+    setProviderPredictions([]);
     textareaRef.current?.focus();
   };
 
-  // Fetch 1–3 on-demand LLM continuations from the transform provider (multiple
-  // prompt/weight variants) and append them to the panel as `ai` lines. Called
-  // only from the AI button / shortcut — never automatically.
-  const handleAiSuggest = async () => {
-    const current = text.trim();
-    if (current.length === 0) return;
-    if (aiLoading) return;
-    setAiLoading(true);
-    try {
-      const lines = await invoke<string[]>("suggest_llm_continuations", {
-        text: current,
-        count: 3,
-      });
-      const aiLines: ContinuationSuggestion[] = lines.map((l) => ({
-        source: "ai",
-        text: l,
-        score: 0,
-      }));
-      // Replace any previous AI lines; keep the local ones for the same draft.
-      setSuggestions((prev) => {
-        const existingLocal = prev.filter(
-          (s) => s.source === "prob" || s.source === "bm25",
-        );
-        const merged = [...existingLocal, ...aiLines];
-        const seen = new Set<string>();
-        return merged.filter((s) => (seen.has(s.source + s.text) ? false : (seen.add(s.source + s.text), true)));
-      });
-      setError(null);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setAiLoading(false);
-    }
-  };
-
-  // Apply the shown corrected sentence in place of the draft.
   const applyCorrection = () => {
     if (!correction) return;
     setText(correction);
@@ -481,7 +493,9 @@ useEffect(() => {
     textareaRef.current?.focus();
   };
 
-  const handleInstructionKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleInstructionKeyDown = (
+    e: React.KeyboardEvent<HTMLInputElement>,
+  ) => {
     if (e.nativeEvent.isComposing) return; // let the IME finalize the instruction
     // Quick actions also work while the instruction input is focused.
     if ((e.metaKey || e.ctrlKey) && e.key >= "0" && e.key <= "9") {
@@ -592,6 +606,15 @@ useEffect(() => {
       if (assigned) runQuickAction(assigned.mode);
       return;
     }
+    if (
+      (e.metaKey || e.ctrlKey) &&
+      e.shiftKey &&
+      (e.key === "p" || e.key === "P")
+    ) {
+      e.preventDefault();
+      requestProviderPredictions();
+      return;
+    }
     // Undo/redo across revisions (ticket 05). Meta = ⌘ on macOS, Ctrl elsewhere.
     if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z")) {
       e.preventDefault();
@@ -613,22 +636,23 @@ useEffect(() => {
       return;
     }
     if (e.key === "Tab") {
-      // Accept the top continuation line; none → default Tab behavior.
-      if (suggestions.length > 0 && !streaming && !aiLoading) {
+      const first = [...localPredictions, ...providerPredictions][0];
+      if (first && !streaming && !aiLoading) {
         e.preventDefault();
-        applySuggestion(suggestions[0]);
-        return;
+        applyPrediction(first);
       }
-      return; // let the browser default handle focus traversal
+      return;
     }
     if (e.key === "Escape") {
       e.preventDefault();
-      if (suggestions.length > 0) {
-        setSuggestions([]); // dismiss the panel first; second Esc closes
+      if (localPredictions.length > 0 || providerPredictions.length > 0) {
+        setLocalPredictions([]);
+        setProviderPredictions([]);
         return;
       }
-      if (streaming) cancelInFlight(); // Esc cancels only the in-flight request
-      else cancel(); // nothing streaming: close the composer (ticket-02 path)
+      if (streaming)
+        cancelInFlight(); // Esc cancels only the in-flight request
+      else cancel(); // nothing streaming: close the composer
     }
   };
 
@@ -712,7 +736,11 @@ useEffect(() => {
         </div>
       )}
       {modes.length > 0 && (
-        <div className="composer__modes" role="group" aria-label={t("composer.modesAriaLabel")}>
+        <div
+          className="composer__modes"
+          role="group"
+          aria-label={t("composer.modesAriaLabel")}
+        >
           {modes.map((m) => (
             <button
               key={m.id}
@@ -738,7 +766,9 @@ useEffect(() => {
               }}
               aria-label={t("composer.savedInstructionLabel")}
             >
-              <option value="">{t("composer.savedInstructionPlaceholder")}</option>
+              <option value="">
+                {t("composer.savedInstructionPlaceholder")}
+              </option>
               {savedPrompts.map((p) => (
                 <option key={p.id} value={p.prompt}>
                   {p.name}
@@ -765,10 +795,12 @@ useEffect(() => {
         value={text}
         onChange={(e) => {
           if (streaming) return;
-          setText(e.target.value);
+          const next = e.target.value;
+          setProviderPredictions([]);
+          setText(next);
           // Mirror the live draft into the current revision (replaces it and
           // drops any redo tail — the ticket-05 edit-after-rewind rule).
-          dispatchRevision({ type: "replace-current", text: e.target.value });
+          dispatchRevision({ type: "replace-current", text: next });
         }}
         onKeyDown={handleKeyDown}
         onCompositionStart={() => setIsComposing(true)}
@@ -778,51 +810,6 @@ useEffect(() => {
         readOnly={streaming}
         spellCheck={false}
       />
-      {(suggestions.length > 0 || aiLoading) && !streaming && (
-        <div
-          className="composer__suggest"
-          role="listbox"
-          aria-label={t("composer.suggestAria")}
-        >
-          <div className="composer__suggest-head">
-            <span className="composer__suggest-title">
-              {t("composer.suggestTitle")}
-            </span>
-            <button
-              type="button"
-              className="composer__ai"
-              disabled={aiLoading}
-              onClick={handleAiSuggest}
-              title={t("composer.aiSuggestTitle")}
-            >
-              {aiLoading
-                ? t("composer.aiLoading")
-                : t("composer.aiSuggest")}
-            </button>
-          </div>
-          <div className="composer__suggest-list">
-            {suggestions.map((s, idx) => (
-              <button
-                key={`${s.source}-${idx}`}
-                type="button"
-                className={`composer__suggest-line ${
-                  idx === 0 ? "composer__suggest-line--first" : ""
-                }`}
-                onClick={() => applySuggestion(s)}
-              >
-                <span className={`composer__suggest-src composer__suggest-src--${s.source}`}>
-                  {s.source === "ai"
-                    ? t("composer.suggestSrcAi")
-                    : s.source === "bm25"
-                      ? "BM25"
-                      : t("composer.suggestSrcLocal")}
-                </span>
-                <span className="composer__suggest-text">{s.text}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
       {correction && !streaming && (
         <button
           type="button"
@@ -836,11 +823,73 @@ useEffect(() => {
           {correction}
         </button>
       )}
+      {(localPredictions.length > 0 ||
+        providerPredictions.length > 0 ||
+        hasPredictionProvider ||
+        aiLoading) &&
+        !streaming && (
+          <div
+            className="composer__suggest"
+            role="listbox"
+            aria-label={t("composer.predictionsAria")}
+          >
+            <div className="composer__suggest-head">
+              <span className="composer__suggest-title">
+                {t("composer.predictionsTitle")}
+              </span>
+              {hasPredictionProvider && (
+                <button
+                  type="button"
+                  className="composer__suggest-ai"
+                  onClick={requestProviderPredictions}
+                  disabled={aiLoading || !text.trim()}
+                >
+                  {t("composer.requestAiPredictions")}
+                </button>
+              )}
+              {aiLoading && (
+                <span className="composer__predicting" aria-live="polite">
+                  {t("composer.aiPredictLoading")}
+                </span>
+              )}
+            </div>
+            <div className="composer__suggest-list">
+              {[...localPredictions, ...providerPredictions]
+                .slice(0, 5)
+                .map((prediction, idx) => (
+                  <button
+                    key={`${prediction.source}-${idx}`}
+                    type="button"
+                    className={`composer__suggest-line ${
+                      idx === 0 ? "composer__suggest-line--first" : ""
+                    }`}
+                    onClick={() => applyPrediction(prediction)}
+                  >
+                    <span
+                      className={`composer__suggest-src composer__suggest-src--${prediction.source}`}
+                    >
+                      {t(
+                        `composer.predictionSrc${
+                          prediction.source.charAt(0).toUpperCase() +
+                          prediction.source.slice(1)
+                        }`,
+                      )}
+                    </span>
+                    <span className="composer__suggest-text">
+                      {prediction.text}
+                    </span>
+                  </button>
+                ))}
+            </div>
+          </div>
+        )}
       {showDiff && (
         <div className="composer__diff" role="region" aria-label="diff">
           <div className="composer__diff-body">
             {diffSegments.length === 0 ? (
-              <span className="composer__diff-empty">{t("composer.diffEmpty")}</span>
+              <span className="composer__diff-empty">
+                {t("composer.diffEmpty")}
+              </span>
             ) : (
               diffSegments.map((seg, idx) => (
                 <span
@@ -899,7 +948,11 @@ useEffect(() => {
           </span>
         )}
         {streaming && (
-          <button type="button" className="composer__cancel" onClick={cancelInFlight}>
+          <button
+            type="button"
+            className="composer__cancel"
+            onClick={cancelInFlight}
+          >
             {t("composer.cancel")}
           </button>
         )}

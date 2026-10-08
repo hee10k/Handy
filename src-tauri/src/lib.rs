@@ -16,8 +16,8 @@ mod memory;
 mod overlay;
 mod paste_tx;
 pub mod portable;
-mod secure_input;
 mod secret;
+mod secure_input;
 mod settings;
 mod shortcut;
 mod signal_handle;
@@ -183,12 +183,10 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(model_manager.clone());
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
-    app_handle.manage(tray::CurrentTrayIconState::new());
     app_handle.manage(text_predict::PredictorState::new());
 
-    // Warm the local typo-correction/autocomplete index in the background so the
-    // composer's predictions are ready by the time the user opens it (building
-    // SymSpell over ~150k words takes a few seconds on first load).
+    // Build the local continuation index before the composer opens. It uses the
+    // bundled dictionaries only; a failed warm-up is retried by the command.
     {
         let app = app_handle.clone();
         std::thread::spawn(move || {
@@ -197,9 +195,10 @@ fn initialize_core_logic(app_handle: &AppHandle) {
                     .resolve(rel, tauri::path::BaseDirectory::Resource)
                     .map_err(|e| format!("cannot resolve {rel}: {e}"))
             };
-            let (Ok(ko), Ok(en)) =
-                (resolve("models/small_ko.txt.zst"), resolve("models/large_en.txt.zst"))
-            else {
+            let (Ok(ko), Ok(en)) = (
+                resolve("models/small_ko.txt.zst"),
+                resolve("models/large_en.txt.zst"),
+            ) else {
                 return;
             };
             let state = app.state::<text_predict::PredictorState>();
@@ -208,6 +207,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
             }
         });
     }
+    app_handle.manage(tray::CurrentTrayIconState::new());
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
@@ -751,10 +751,9 @@ pub fn run(cli_args: CliArgs) {
             commands::transcription::unload_model_manually,
             commands::composer::commit_composer,
             commands::composer::cancel_composer,
-            commands::composer::get_foreground_app_category,
             text_predict::correct_text,
-            text_predict::complete_prefix,
             text_predict::get_continuation_suggestions,
+            commands::composer::get_foreground_app_category,
             transform::suggest_llm_continuations,
             commands::transform::list_transform_modes,
             commands::transform::run_transform,

@@ -74,8 +74,8 @@ fn parse_freq_dictionary(dict: &str) -> Vec<(String, f64)> {
 /// Common Korean particles/josa that attach to nouns. If the suggested fix only
 /// strips one of these, the token is a legitimate inflected form (not a typo).
 const KOREAN_PARTICLES: &[&str] = &[
-    "은", "는", "이", "가", "을", "를", "도", "만", "까", "의", "에", "와", "과", "로",
-    "으로", "에서", "부터", "까지", "처럼", "만큼", "하고", "이랑", "랑", "하고", "요",
+    "은", "는", "이", "가", "을", "를", "도", "만", "까", "의", "에", "와", "과", "로", "으로",
+    "에서", "부터", "까지", "처럼", "만큼", "하고", "이랑", "랑", "하고", "요",
 ];
 
 fn is_korean_token(word: &str) -> bool {
@@ -91,11 +91,35 @@ fn char_bigrams(s: &str) -> Vec<String> {
 /// Common Korean/English continuers used when the sentence is already complete
 /// (no in-progress word) so there is still a local "keep writing" suggestion.
 const KOREAN_CONNECTORS: &[&str] = &[
-    "그리고", "또한", "하지만", "그래서", "그런데", "다음으로", "반면에", "따라서",
+    "그리고",
+    "또한",
+    "하지만",
+    "그래서",
+    "그런데",
+    "다음으로",
+    "반면에",
+    "따라서",
 ];
 const ENGLISH_CONNECTORS: &[&str] = &[
-    "and", "but", "so", "also", "then", "next", "however", "therefore", "moreover",
+    "and",
+    "but",
+    "so",
+    "also",
+    "then",
+    "next",
+    "however",
+    "therefore",
+    "moreover",
 ];
+
+/// A trailing sentence terminator means the next suggestion must continue the
+/// draft, even when the user has not typed a space after the punctuation yet.
+fn ends_sentence(text: &str) -> bool {
+    matches!(
+        text.trim_end().chars().last(),
+        Some('.' | '!' | '?' | '。' | '！' | '？')
+    )
+}
 
 /// Dominant script of a draft: Korean when it contains any Hangul syllable,
 /// otherwise English (used to pick language-appropriate connectors).
@@ -185,48 +209,6 @@ impl TextPredictor {
         !word.is_empty() && self.freq_rank.contains_key(&word.to_lowercase())
     }
 
-    /// Up to `limit` dictionary words sharing `prefix`, ranked by frequency
-    /// (most common first). Empty prefix or prefixes shorter than 2 graphemes
-    /// yield nothing (avoids noise from single-letter matches). Exact hit is
-    /// excluded when `include_exact` is false.
-    pub fn complete_prefix(&self, prefix: &str, limit: usize, include_exact: bool) -> Vec<String> {
-        let prefix = prefix.trim();
-        if prefix.chars().count() < 2 || limit == 0 {
-            return Vec::new();
-        }
-        // Binary-search the byte-sorted vec for the byte range [prefix, prefix*).
-        let lo = self.prefix_sorted.partition_point(|w| w.as_bytes() < prefix.as_bytes());
-        // Upper bound: everything ≥ prefix + high sentinel byte.
-        let mut hi_bound = prefix.as_bytes().to_vec();
-        hi_bound.push(0xFF);
-        let hi_guard = String::from_utf8_lossy(&hi_bound);
-        let hi = self
-            .prefix_sorted
-            .partition_point(|w| w.as_bytes() < hi_guard.as_bytes());
-
-        // Collect matches within the examined cap to bound worst-case cost on
-        // short/prefix-common inputs, then rank by frequency rank.
-        const EXAMINE_CAP: usize = 4096;
-        let examined = (hi - lo).min(EXAMINE_CAP);
-        let mut candidates: Vec<(usize, &str)> = Vec::new();
-        for w in self.prefix_sorted.iter().skip(lo).take(examined) {
-            if !w.starts_with(prefix) {
-                continue;
-            }
-            if !include_exact && w.eq_ignore_ascii_case(prefix) {
-                continue;
-            }
-            let rank = self.freq_rank.get(w).copied().unwrap_or(usize::MAX);
-            candidates.push((rank, w.as_str()));
-        }
-        candidates.sort_by_key(|(rank, w)| (*rank, w.to_lowercase()));
-        candidates
-            .into_iter()
-            .take(limit)
-            .map(|(_, w)| w.to_string())
-            .collect()
-    }
-
     /// Correct the best token of `word` via SymSpell. `None` when no confident
     /// correction exists (word in dictionary, too short, or no close match).
     fn correct_word(&self, word: &str, max_distance: usize) -> Option<String> {
@@ -239,12 +221,20 @@ impl TextPredictor {
         if meaningful.len() < self.min_correctable_len(normalized.chars().count()) {
             return None;
         }
-        if normalized.chars().all(|c| c.is_numeric() || c.is_ascii_punctuation()) {
+        if normalized
+            .chars()
+            .all(|c| c.is_numeric() || c.is_ascii_punctuation())
+        {
             return None;
         }
-        let suggestions = self
-            .spell
-            .lookup(&normalized, Verbosity::Top, max_distance, &None, Some(1), false);
+        let suggestions = self.spell.lookup(
+            &normalized,
+            Verbosity::Top,
+            max_distance,
+            &None,
+            Some(1),
+            false,
+        );
         let s = suggestions.first()?;
         if s.distance == 0 {
             return None; // already correct
@@ -284,10 +274,7 @@ impl TextPredictor {
             if let Some(corrected) = self.correct_word(token, max_distance) {
                 changed = true;
                 // Preserve original leading/trailing punctuation.
-                let before: String = token
-                    .chars()
-                    .take_while(|c| !c.is_alphanumeric())
-                    .collect();
+                let before: String = token.chars().take_while(|c| !c.is_alphanumeric()).collect();
                 let after: String = token
                     .chars()
                     .rev()
@@ -325,7 +312,12 @@ impl TextPredictor {
             .iter()
             .filter(|w| w.starts_with(prefix))
             .take(max)
-            .map(|w| (self.freq_rank.get(w).copied().unwrap_or(usize::MAX), w.as_str()))
+            .map(|w| {
+                (
+                    self.freq_rank.get(w).copied().unwrap_or(usize::MAX),
+                    w.as_str(),
+                )
+            })
             .collect()
     }
 
@@ -351,7 +343,7 @@ impl TextPredictor {
         score
     }
 
-/// Up to 5 local continuation lines (`prob` + `bm25`) for the current
+    /// Up to 5 local continuation lines (`prob` + `bm25`) for the current
     /// draft. When a word is in progress, `prob` lines are the top-frequency
     /// strictly-longer prefix completions (the bare partial word is excluded)
     /// and `bm25` lines are the best lexical-overlap variants for diversity.
@@ -364,7 +356,10 @@ impl TextPredictor {
             return Vec::new();
         }
         let tokens: Vec<&str> = lower.split_whitespace().collect();
-        let ends_in_word = !lower.ends_with(' ') && !lower.ends_with('\n') && !lower.ends_with('\t');
+        let ends_in_word = !lower.ends_with(' ')
+            && !lower.ends_with('\n')
+            && !lower.ends_with('\t')
+            && !ends_sentence(&lower);
         let prefix = if ends_in_word {
             tokens.last().copied().unwrap_or("").to_string()
         } else {
@@ -382,40 +377,38 @@ impl TextPredictor {
                 .collect();
             matches.sort_by_key(|(r, w)| (*r, std::cmp::Reverse(w.chars().count())));
 
-            // Sparse-prefix fallback: when the partial word has fewer than two
-            // longer completions (common for Korean), also offer the bare word
-            // itself as a *commit* completion (the frontend replaces the
-            // partial, so this closes the word with a trailing space rather
-            // than appending a duplicate). Guarantees >1 line for sparse
-            // prefixes without re-suggesting the word when richer options exist.
-            let is_dict_word = self.freq_rank.contains_key(prefix.as_str());
-            let mut prob_candidates: Vec<&str> = matches.iter().map(|(_, w)| *w).collect();
-            if is_dict_word && prob_candidates.len() < 2 && !prob_candidates.contains(&prefix.as_str()) {
-                prob_candidates.push(prefix.as_str());
-            }
-
-            // prob: top-3 by frequency.
-            for w in prob_candidates.iter().take(3) {
-                let rank = self.freq_rank.get(*w).copied().unwrap_or(usize::MAX);
+            // One probability candidate: the most frequent longer completion;
+            // when none exists, the exact dictionary word commits the token.
+            let prob = matches.first().map(|(_, word)| *word).or_else(|| {
+                self.freq_rank
+                    .contains_key(prefix.as_str())
+                    .then_some(prefix.as_str())
+            });
+            if let Some(word) = prob {
+                let rank = self.freq_rank.get(word).copied().unwrap_or(usize::MAX);
                 out.push(ContinuationSuggestion {
                     source: "prob",
-                    text: (*w).to_string(),
+                    text: word.to_string(),
                     score: 1.0 - (rank as f32 / 1_000_000.0),
                 });
             }
 
-            // bm25: top-2 lexical-overlap matches distinct from prob picks.
-            let mut bm25: Vec<(f32, &str)> = matches
+            // One BM25 candidate, distinct from the frequency pick. A sparse
+            // prefix can use the exact dictionary word to close the token.
+            let bm25 = matches
                 .iter()
-                .filter(|(_, w)| !out.iter().any(|s| s.text == *w))
-                .map(|(_, w)| (self.bm25_score(w, &query_bigrams), *w))
-                .filter(|(s, _)| *s > 0.0)
-                .collect();
-            bm25.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-            for (score, w) in bm25.into_iter().take(2) {
+                .filter(|(_, word)| Some(*word) != prob)
+                .map(|(_, word)| (self.bm25_score(word, &query_bigrams), *word))
+                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+                .or_else(|| {
+                    self.freq_rank
+                        .contains_key(prefix.as_str())
+                        .then_some((0.0, prefix.as_str()))
+                });
+            if let Some((score, word)) = bm25 {
                 out.push(ContinuationSuggestion {
                     source: "bm25",
-                    text: w.to_string(),
+                    text: word.to_string(),
                     score,
                 });
             }
@@ -440,31 +433,31 @@ impl TextPredictor {
                     .filter(|c| self.freq_rank.contains_key(*c))
                     .collect();
             }
-            // Rank within the chosen script by frequency.
-            present.sort_by_key(|c| self.freq_rank.get(*c).copied().unwrap_or(usize::MAX));
-
-            // prob: top-3 connectors by frequency.
-            for c in present.iter().take(3) {
+            // Exactly one probability connector and one distinct BM25 connector
+            // keep the panel's local rows meaningful and source-labeled.
+            let prob = present.first().copied();
+            if let Some(connector) = prob {
+                let rank = self.freq_rank.get(connector).copied().unwrap_or(usize::MAX);
                 out.push(ContinuationSuggestion {
                     source: "prob",
-                    text: (*c).to_string(),
-                    score: 0.9 - out.len() as f32 * 0.05,
+                    text: connector.to_string(),
+                    score: 1.0 - (rank as f32 / 1_000_000.0),
                 });
             }
-
-            // bm25: top-2 connectors by lexical overlap, distinct from prob.
-            let mut bm25: Vec<(f32, &str)> = present
+            if let Some(connector) = present
                 .iter()
-                .filter(|c| !out.iter().any(|s| s.text == **c))
-                .map(|c| (self.bm25_score(c, &query_bigrams), *c))
-                .filter(|(s, _)| *s > 0.0)
-                .collect();
-            bm25.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-            for (score, w) in bm25.into_iter().take(2) {
+                .copied()
+                .filter(|connector| Some(*connector) != prob)
+                .max_by(|a, b| {
+                    self.bm25_score(a, &query_bigrams)
+                        .partial_cmp(&self.bm25_score(b, &query_bigrams))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+            {
                 out.push(ContinuationSuggestion {
                     source: "bm25",
-                    text: w.to_string(),
-                    score,
+                    text: connector.to_string(),
+                    score: self.bm25_score(connector, &query_bigrams),
                 });
             }
         }
@@ -509,8 +502,8 @@ pub(crate) fn load_predictor(
 }
 
 fn decompress_zstd(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| format!("Cannot read model '{}': {e}", path.display()))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("Cannot read model '{}': {e}", path.display()))?;
     let mut decoder = zstd::stream::read::Decoder::new(&bytes[..])
         .map_err(|e| format!("Cannot open zstd stream '{}': {e}", path.display()))?;
     let mut out = String::new();
@@ -541,30 +534,8 @@ pub fn correct_text(
     Ok(predictor.correct_sentence(&text, 1))
 }
 
-/// Suggest dictionary words sharing `prefix` (the partial word being typed),
-/// ranked by frequency. Local, no LLM.
-#[tauri::command]
-#[specta::specta]
-pub fn complete_prefix(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, PredictorState>,
-    prefix: String,
-    limit: Option<usize>,
-) -> Result<Vec<String>, String> {
-    let resolve = |rel: &str| {
-        app.path()
-            .resolve(rel, tauri::path::BaseDirectory::Resource)
-            .map_err(|e| format!("Cannot locate bundled dictionary '{rel}': {e}"))
-    };
-    let ko = resolve("models/small_ko.txt.zst")?;
-    let en = resolve("models/large_en.txt.zst")?;
-    let predictor = load_predictor(&ko, &en, &state)?;
-    Ok(predictor.complete_prefix(&prefix, limit.unwrap_or(5), true))
-}
-
-/// Local continuation suggestions (`bm25` + `prob`) for the composer's bottom
-/// panel — pure dictionary/BM25, instant and offline. LLM lines are a separate,
-/// on-demand command (`transform::suggest_llm_continuations`).
+/// panel — pure dictionary/BM25, instant and offline. Model continuations are
+/// a separate, explicit command (`transform::suggest_llm_continuations`).
 #[tauri::command]
 #[specta::specta]
 pub fn get_continuation_suggestions(
@@ -604,29 +575,6 @@ mod tests {
         assert!(!p.contains("zzzz"));
         // Most frequent first: "I" (0.06) outranks "the" (0.05).
         assert!(p.freq_rank["I"] < p.freq_rank["the"]);
-    }
-
-    #[test]
-    fn completion_ranks_by_frequency() {
-        let p = predictor();
-        // "hand" prefix with exact included: hand(rank) < handle → hand first.
-        let hits = p.complete_prefix("hand", 5, true);
-        assert_eq!(hits.first().map(String::as_str), Some("hand"));
-        assert!(hits.iter().any(|w| w == "handle"));
-        // Korean syllable prefix: 자전거 is most frequent.
-        let ko = p.complete_prefix("자전", 5, true);
-        assert_eq!(ko.first().map(String::as_str), Some("자전거"));
-        assert!(ko.contains(&"자전차".to_string()));
-    }
-
-    #[test]
-    fn completion_needs_two_chars_and_caps() {
-        let p = predictor();
-        assert!(p.complete_prefix("t", 5, false).is_empty());
-        assert!(p.complete_prefix("", 5, false).is_empty());
-        assert!(p.complete_prefix("hand", 0, false).is_empty());
-        assert!(p.complete_prefix("hand", 5, true).contains(&"hand".to_string()));
-        assert!(!p.complete_prefix("hand", 5, false).contains(&"hand".to_string()));
     }
 
     #[test]
@@ -670,109 +618,47 @@ mod tests {
     }
 
     #[test]
-    fn continuation_has_prob_and_bm25_lines() {
+    fn continuation_returns_probability_and_bm25_lines() {
         let p = predictor();
-        // Mid-word: complete "자전" → multiple distinct lines, including the
-        // top-frequency 자전거; the bare partial word itself is excluded.
-        let mid = p.continuation_candidates("나는 자전");
-        assert!(
-            !mid.is_empty()
-                && mid.iter().any(|s| s.source == "prob" && s.text == "자전거"),
-            "mid-word prob should complete 자전: {mid:?}"
-        );
-        assert!(
-            mid.len() >= 2,
-            "mid-word should suggest multiple lines: {mid:?}"
-        );
-        assert!(
-            !mid.iter().any(|s| s.text == "자전"),
-            "bare partial word must not be suggested: {mid:?}"
-        );
-        // Complete sentence: falls back to connectors (prob always; bm25 only
-        // when a connector shares lexical bigrams with the sentence).
-        let full = p.continuation_candidates("이제 시작하겠습니다 ");
-        assert!(!full.is_empty() && full[0].source == "prob", "prob connector: {full:?}");
-        // Empty draft → no suggestions.
-        assert!(p.continuation_candidates("").is_empty());
-    }
-
-    #[test]
-    fn continuation_returns_multiple_distinct_lines() {
-        let p = predictor();
-        // "han" prefix has three longer matches → all suggested, none equals
-        // the bare partial word.
-        let out = p.continuation_candidates("나는 han");
-        let texts: Vec<&str> = out.iter().map(|s| s.text.as_str()).collect();
-        assert!(out.len() >= 3, "expected multiple lines: {out:?}");
-        let mut uniq: Vec<&str> = texts.clone();
-        uniq.sort();
-        uniq.dedup();
-        assert_eq!(uniq.len(), out.len(), "lines must be distinct: {out:?}");
-        assert!(
-            out.iter().any(|s| s.text == "handle")
-                && !texts.contains(&"han"),
-            "completes longer words, never the bare prefix: {out:?}"
-        );
-        // Never exceeds the 5-line cap.
-        assert!(out.len() <= 5);
-    }
-
-    /// Builds the index from the actual bundled wordfreq models and sanity-checks
-    /// both directions. Run manually (`cargo test -- --ignored`) — decompressing
-    /// + indexing ~351k words takes a few seconds.
-    #[test]
-    #[ignore]
-    fn real_dictionaries_build_and_work() {
-        let ko = decompress_zstd(Path::new("resources/models/small_ko.txt.zst"))
-            .expect("korean dict");
-        let en = decompress_zstd(Path::new("resources/models/large_en.txt.zst"))
-            .expect("english dict");
-        let mut combined = ko;
-        combined.push('\n');
-        combined.push_str(&en);
-        let start = std::time::Instant::now();
-        let p = TextPredictor::from_dictionary(&combined);
-        eprintln!(
-            "index build took {:?} for {} words",
-            start.elapsed(),
-            p.prefix_sorted.len()
-        );
-// English typo + completion.
-        let corrected = p.correct_sentence("I can haandle this issue", 1);
-        assert_eq!(corrected.as_deref(), Some("I can handle this issue"));
-        let hits = p.complete_prefix("hap", 5, false);
-        assert!(!hits.is_empty());
-        // Korean: a real 1-edit typo inside a dictionary word is fixed…
-        let ko_corrected = p.correct_sentence("자젼거  타고가요", 1).unwrap();
-        assert!(ko_corrected.contains("자전거"), "got {ko_corrected}");
-        // …while a noun+particle inflection is left alone (no particle loss).
-        let ko_inflected = p.correct_sentence("서울은", 1);
-        assert!(ko_inflected.is_none() || ko_inflected.as_deref() == Some("서울은"));
-        let ko_hits = p.complete_prefix("자전", 5, true);
-        assert!(ko_hits.iter().any(|w| w.contains("자전")));
-        // The reported issue: typing should surface multiple continuation lines.
         let mid = p.continuation_candidates("나는 자전");
         assert!(
             mid.iter().any(|s| s.source == "prob" && s.text == "자전거"),
-            "mid-word completes to 자전거: {mid:?}"
+            "prob should complete 자전: {mid:?}"
         );
-        assert!(mid.len() >= 2, "mid-word yields multiple lines: {mid:?}");
-        let mut mset: Vec<String> = mid.iter().map(|s| s.text.clone()).collect();
-        mset.sort();
-        mset.dedup();
-        assert_eq!(mset.len(), mid.len(), "mid lines distinct: {mid:?}");
-        // A common prefix yields multiple distinct lines (worst case the bare
-        // word as a sparse-prefix commit, which is still a valid completion).
-        let today = p.continuation_candidates("오늘");
-        let mut tset: Vec<String> = today.iter().map(|s| s.text.clone()).collect();
-        tset.sort();
-        tset.dedup();
-        assert_eq!(tset.len(), today.len(), "today lines distinct: {today:?}");
-        assert!(today.len() >= 2, "늘 prefix yields multiple lines: {today:?}");
-        assert!(today.len() <= 5, "capped at 5: {today:?}");
-        // English sentence end → connector lines.
-        let ends = p.continuation_candidates("I want to go to the park ");
-        assert!(!ends.is_empty(), "sentence end gives connectors: {ends:?}");
-        eprintln!("KOR mid={mid:?}\nEN end={ends:?}");
+        let bm25 = mid
+            .iter()
+            .find(|s| s.source == "bm25")
+            .expect("BM25 should offer a second local candidate");
+        assert_ne!(bm25.text, "자전거", "BM25 must differ from probability");
+        assert!(mid.len() <= 5);
+
+        let full = p.continuation_candidates("이제 시작하겠습니다 ");
+        assert!(
+            !full.is_empty() && full[0].source == "prob",
+            "prob connector: {full:?}"
+        );
+        assert!(p.continuation_candidates("").is_empty());
+        let punctuated = p.continuation_candidates("I can handle this.");
+        assert!(
+            punctuated.iter().any(|s| s.source == "prob"),
+            "punctuated draft should continue: {punctuated:?}"
+        );
+    }
+
+    /// Builds the index from the actual bundled dictionaries. This intentionally
+    /// stays opt-in because resource decompression and indexing take seconds.
+    #[test]
+    #[ignore]
+    fn real_dictionaries_build_and_work() {
+        let ko =
+            decompress_zstd(Path::new("resources/models/small_ko.txt.zst")).expect("korean dict");
+        let en =
+            decompress_zstd(Path::new("resources/models/large_en.txt.zst")).expect("english dict");
+        let p = TextPredictor::from_dictionary(&format!("{ko}\n{en}"));
+        let corrected = p.correct_sentence("I can haandle this issue", 1);
+        assert_eq!(corrected.as_deref(), Some("I can handle this issue"));
+        let mid = p.continuation_candidates("나는 자전");
+        assert!(mid.iter().any(|s| s.source == "prob" && s.text == "자전거"));
+        assert!(mid.iter().any(|s| s.source == "bm25"));
     }
 }

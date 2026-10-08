@@ -80,7 +80,10 @@ English prompt. Structure it clearly with an explicit goal, context, and \
 constraints inferred from the notes. Output only the finished prompt in English."
         }
         TransformMode::Custom => {
-            return instruction.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+            return instruction
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
         }
     };
     Some(system.to_string())
@@ -226,9 +229,15 @@ pub trait TransformProvider: Send + Sync {
         &'a self,
         user_content: String,
     ) -> std::pin::Pin<
-        Box<dyn futures_util::Future<Output = Result<BoxStream<'static, Result<String, TransformError>>, TransformError>>
-            + Send
-            + 'a>,
+        Box<
+            dyn futures_util::Future<
+                    Output = Result<
+                        BoxStream<'static, Result<String, TransformError>>,
+                        TransformError,
+                    >,
+                > + Send
+                + 'a,
+        >,
     >;
 }
 
@@ -265,9 +274,15 @@ impl TransformProvider for OpenAiTransformProvider {
         &'a self,
         user_content: String,
     ) -> std::pin::Pin<
-        Box<dyn futures_util::Future<Output = Result<BoxStream<'static, Result<String, TransformError>>, TransformError>>
-            + Send
-            + 'a>,
+        Box<
+            dyn futures_util::Future<
+                    Output = Result<
+                        BoxStream<'static, Result<String, TransformError>>,
+                        TransformError,
+                    >,
+                > + Send
+                + 'a,
+        >,
     > {
         let provider = self.provider.clone();
         let model = self.model.clone();
@@ -301,9 +316,7 @@ fn flatten_deltas(
     batches
         .flat_map(|batch| match batch {
             Ok(deltas) => futures_util::stream::iter(
-                deltas
-                    .into_iter()
-                    .map(|d| Ok::<String, TransformError>(d)),
+                deltas.into_iter().map(|d| Ok::<String, TransformError>(d)),
             )
             .boxed(),
             Err(e) => futures_util::stream::iter([Err::<String, TransformError>(
@@ -404,12 +417,13 @@ pub async fn run_transform(
     }
 
     let settings = get_settings(app);
-    let provider = settings.active_post_process_provider().cloned().ok_or_else(|| {
-        TransformError {
+    let provider = settings
+        .active_post_process_provider()
+        .cloned()
+        .ok_or_else(|| TransformError {
             kind: TransformErrorKind::Other,
             message: "No transform provider is selected. Choose one in Settings.".to_string(),
-        }
-    })?;
+        })?;
 
     if provider.base_url.starts_with("apple-intelligence://") {
         return Err(TransformError {
@@ -444,13 +458,8 @@ pub async fn run_transform(
     let (system_prompt, user_content) = build_messages(mode, &text, instruction.as_deref());
     let reasoning_effort = settings.reasoning_effort_for(&provider.id);
 
-    let tp = OpenAiTransformProvider::new(
-        provider,
-        model,
-        system_prompt,
-        api_key,
-        reasoning_effort,
-    );
+    let tp =
+        OpenAiTransformProvider::new(provider, model, system_prompt, api_key, reasoning_effort);
 
     let state = app.state::<TransformState>();
     let generation = state.begin();
@@ -522,10 +531,43 @@ fn emit_error(app: &AppHandle, error: &TransformError, mode: TransformMode) {
     );
 }
 
-/// On-demand "continue the sentence" suggestions from the selected transform
-/// provider (multiple prompt/weight variants → up to `count` distinct lines).
-/// Non-streaming; called from the composer's AI-recommend button, never on
-/// every keystroke. Returns up to `count` clean continuation strings.
+/// Parse one complete prediction per model response line: trim accidental list
+/// markers/quotes, drop blanks and duplicates, then cap at the requested count.
+fn parse_sentence_predictions(reply: &str, count: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in reply.lines() {
+        let line = line
+            .trim()
+            .trim_start_matches(|c: char| {
+                c.is_ascii_digit() || c == '.' || c == ')' || c == '-' || c == '*'
+            })
+            .trim()
+            .trim_matches(['"', '\''])
+            .trim()
+            .to_string();
+        if line.is_empty() || out.iter().any(|s| s == &line) {
+            continue;
+        }
+        out.push(line);
+        if out.len() >= count {
+            break;
+        }
+    }
+    out
+}
+
+fn continuation_system_prompt(count: usize) -> String {
+    format!(
+        "You are a writing assistant. Return {count} distinct, natural continuations for the \
+         user's draft. Preserve its language and formality. Each line must be text that can be \
+         appended directly after the draft; do not repeat, rewrite, or correct the draft, and do \
+         not add facts. Return one continuation per line with no numbering, bullets, quotes, or \
+         commentary."
+    )
+}
+
+/// Explicit model-generated continuations for the composer. The caller invokes
+/// this on demand; each returned line is appended to the existing draft.
 #[tauri::command]
 #[specta::specta]
 pub async fn suggest_llm_continuations(
@@ -545,9 +587,7 @@ pub async fn suggest_llm_continuations(
         .cloned()
         .ok_or_else(|| "No transform provider is selected. Choose one in Settings.".to_string())?;
     if provider.base_url.starts_with("apple-intelligence://") {
-        return Err(
-            "Apple Intelligence does not support AI continuation suggestions.".to_string(),
-        );
+        return Err("Apple Intelligence does not support AI continuations.".to_string());
     }
     let model = settings
         .post_process_models
@@ -563,40 +603,18 @@ pub async fn suggest_llm_continuations(
     };
     let reasoning_effort = settings.reasoning_effort_for(&provider.id);
 
-    let system_prompt = format!(
-        "You are a concise writing assistant. Continue the user's sentence naturally, \
-         matching the language (and formality) they used. Return exactly {count} distinct, \
-         short continuations — one per line. No numbering, no bullets, no quotes, no \
-         commentary. Each continuation is 2–15 words and reads as a direct continuation of \
-         their sentence after a space."
-    );
-    let user_prompt = text.clone();
+    let system_prompt = continuation_system_prompt(count);
     let reply = crate::llm_client::send_chat_completion(
         &provider,
         api_key,
         &model,
-        format!("{system_prompt}\n\nSentence to continue:\n{user_prompt}"),
+        format!("{system_prompt}\n\nDraft:\n{text}"),
         reasoning_effort,
     )
     .await?
     .unwrap_or_default();
 
-    let mut out: Vec<String> = Vec::new();
-    for line in reply.lines() {
-        let line = line.trim().trim_matches(['-', '*', '"', '\'', '1', '2', '3', '4', '5'])
-            .trim()
-            .to_string();
-        if line.is_empty() {
-            continue;
-        }
-        if !out.iter().any(|s| s == &line) {
-            out.push(line);
-        }
-        if out.len() >= count {
-            break;
-        }
-    }
-    Ok(out)
+    Ok(parse_sentence_predictions(&reply, count))
 }
 
 #[cfg(test)]
@@ -652,15 +670,22 @@ mod tests {
         let ids: Vec<&str> = modes.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(
             ids,
-            vec![
-                "polish",
-                "translate_english",
-                "prompt_english",
-                "custom"
-            ]
+            vec!["polish", "translate_english", "prompt_english", "custom"]
         );
-        assert!(modes.iter().find(|m| m.id == "custom").unwrap().takes_instruction);
-        assert!(!modes.iter().find(|m| m.id == "polish").unwrap().takes_instruction);
+        assert!(
+            modes
+                .iter()
+                .find(|m| m.id == "custom")
+                .unwrap()
+                .takes_instruction
+        );
+        assert!(
+            !modes
+                .iter()
+                .find(|m| m.id == "polish")
+                .unwrap()
+                .takes_instruction
+        );
     }
 
     #[test]
@@ -685,7 +710,9 @@ mod tests {
     fn error_messages_never_echo_secrets() {
         // Even a Decode/Transport error message that wraps a raw string must not
         // leak into the user-facing text.
-        let err = TransformError::from(ChatStreamError::Transport("<invalid url with token sk-secret>".to_string()));
+        let err = TransformError::from(ChatStreamError::Transport(
+            "<invalid url with token sk-secret>".to_string(),
+        ));
         assert!(!err.message.contains("sk-secret"));
         assert!(!err.message.contains("<invalid"));
     }
@@ -702,11 +729,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sentence_prediction_parser_strips_lists_dedupes_and_caps() {
+        let reply = "1. \"첫 번째 문장\"\n- 두 번째 문장\n2) 첫 번째 문장\n* 세 번째 문장";
+        assert_eq!(
+            parse_sentence_predictions(reply, 2),
+            vec!["첫 번째 문장", "두 번째 문장"]
+        );
+    }
+
+    #[test]
+    fn continuation_prompt_requires_append_only_output() {
+        let prompt = continuation_system_prompt(3);
+        assert!(prompt.contains("appended directly"));
+        assert!(prompt.contains("do not repeat, rewrite, or correct"));
+        assert!(prompt.contains("3 distinct"));
+    }
+
     // --- deterministic flatten behavior (no network) ---
     #[tokio::test]
     async fn flatten_deltas_preserves_order_and_propagates_error() {
         use futures_util::stream;
-
         let batches: Vec<Result<Vec<String>, ChatStreamError>> = vec![
             Ok(vec!["a".to_string(), "b".to_string()]),
             Err(ChatStreamError::HttpStatus { status: 429 }),
@@ -717,7 +760,10 @@ mod tests {
         assert_eq!(items.len(), 3);
         assert_eq!(items[0].as_ref().unwrap(), "a");
         assert_eq!(items[1].as_ref().unwrap(), "b");
-        assert_eq!(items[2].as_ref().unwrap_err().kind, TransformErrorKind::RateLimit);
+        assert_eq!(
+            items[2].as_ref().unwrap_err().kind,
+            TransformErrorKind::RateLimit
+        );
     }
 
     #[test]

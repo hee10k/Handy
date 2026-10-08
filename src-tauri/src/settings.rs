@@ -1261,7 +1261,10 @@ mod tests {
         let mut settings: AppSettings =
             serde_json::from_value(serde_json::json!({})).expect("parses");
         // Legacy default: custom/openrouter disable reasoning; others are unset.
-        assert_eq!(settings.reasoning_effort_for("custom"), Some("none".to_string()));
+        assert_eq!(
+            settings.reasoning_effort_for("custom"),
+            Some("none".to_string())
+        );
         assert_eq!(
             settings.reasoning_effort_for("openrouter"),
             Some("none".to_string())
@@ -1272,11 +1275,17 @@ mod tests {
         settings
             .post_process_reasoning_effort
             .insert("custom".to_string(), "high".to_string());
-        assert_eq!(settings.reasoning_effort_for("custom"), Some("high".to_string()));
+        assert_eq!(
+            settings.reasoning_effort_for("custom"),
+            Some("high".to_string())
+        );
         settings
             .post_process_reasoning_effort
             .insert("openai".to_string(), "low".to_string());
-        assert_eq!(settings.reasoning_effort_for("openai"), Some("low".to_string()));
+        assert_eq!(
+            settings.reasoning_effort_for("openai"),
+            Some("low".to_string())
+        );
 
         // A blank override clears the preference (falls back to unset).
         settings

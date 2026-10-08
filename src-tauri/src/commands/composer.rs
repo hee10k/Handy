@@ -41,8 +41,7 @@ struct CapturedFocus {
     raw: isize,
 }
 
-static CAPTURED_FOCUS: LazyLock<Mutex<Option<CapturedFocus>>> =
-    LazyLock::new(|| Mutex::new(None));
+static CAPTURED_FOCUS: LazyLock<Mutex<Option<CapturedFocus>>> = LazyLock::new(|| Mutex::new(None));
 
 fn remember_focus(focus: Option<CapturedFocus>) {
     if let Ok(mut guard) = CAPTURED_FOCUS.lock() {
@@ -124,14 +123,37 @@ fn classify_foreground_app(bundle: &str, name: &str) -> String {
     let needle = format!("{bundle} {name}");
     let mail = ["apple.mail", "outlook", "mail", "spark", "thunderbird"];
     let browsers = [
-        "safari", "chrome", "google chrome", "edge", "firefox", "brave",
-        "thebrowser", "arc", "opera", "vivaldi",
+        "safari",
+        "chrome",
+        "google chrome",
+        "edge",
+        "firefox",
+        "brave",
+        "thebrowser",
+        "arc",
+        "opera",
+        "vivaldi",
     ];
     let editors = [
-        "vscode", "visual-studio-code", "code", "cursor", "jetbrains",
-        "intellij", "pycharm", "webstorm", "clion", "goland", "phpstorm",
-        "rustrover", "zed", "xcode", "sublime", "textedit", "neovide",
-        "macvim", "nvim",
+        "vscode",
+        "visual-studio-code",
+        "code",
+        "cursor",
+        "jetbrains",
+        "intellij",
+        "pycharm",
+        "webstorm",
+        "clion",
+        "goland",
+        "phpstorm",
+        "rustrover",
+        "zed",
+        "xcode",
+        "sublime",
+        "textedit",
+        "neovide",
+        "macvim",
+        "nvim",
     ];
     if mail.iter().any(|k| needle.contains(k)) {
         return "mail".into();
@@ -152,9 +174,7 @@ mod platform {
     use super::CapturedFocus;
     use log::{debug, warn};
     use objc2::msg_send;
-    use objc2_app_kit::{
-        NSApplicationActivationOptions, NSRunningApplication, NSWorkspace,
-    };
+    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
     use tauri::AppHandle;
 
     /// Requires the main thread (AppKit). `open_composer` dispatches here before
@@ -269,7 +289,10 @@ mod platform {
 /// Create the composer webview window (hidden). Idempotent. Must run on the
 /// main thread (it builds a native window).
 fn create_composer(app_handle: &AppHandle) -> Result<(), String> {
-    if app_handle.get_webview_window(COMPOSER_WINDOW_LABEL).is_some() {
+    if app_handle
+        .get_webview_window(COMPOSER_WINDOW_LABEL)
+        .is_some()
+    {
         return Ok(());
     }
 
@@ -317,7 +340,11 @@ pub fn deliver_voice_input_to_focused_composer(app: &AppHandle, text: &str) -> b
     if !focused {
         return false;
     }
-    let _ = app.emit_to(COMPOSER_WINDOW_LABEL, "composer-voice-input", text.to_string());
+    let _ = app.emit_to(
+        COMPOSER_WINDOW_LABEL,
+        "composer-voice-input",
+        text.to_string(),
+    );
     true
 }
 
@@ -388,17 +415,15 @@ fn composer_history_fields(
     original: Option<&str>,
     mode: Option<&str>,
 ) -> (String, String, bool, Option<String>, Option<String>) {
-    let transformed = original
-        .map(|o| o.trim() != text.trim())
-        .unwrap_or(false);
+    let transformed = original.map(|o| o.trim() != text.trim()).unwrap_or(false);
     let transcription_text = original.unwrap_or(text).to_string();
     let post_processed_text = transformed.then(|| text.to_string());
     (
-        "composer".to_string(),            // file_name: composer sessions have no audio recording
-        transcription_text,                // "from"
-        transformed,                       // post_process_requested
-        post_processed_text,               // "to"
-        mode.map(str::to_string),          // post_process_prompt
+        "composer".to_string(), // file_name: composer sessions have no audio recording
+        transcription_text,     // "from"
+        transformed,            // post_process_requested
+        post_processed_text,    // "to"
+        mode.map(str::to_string), // post_process_prompt
     )
 }
 
@@ -424,10 +449,13 @@ pub fn commit_composer(
     // from→to. A recording failure is logged but never blocks the paste.
     let (file_name, transcription_text, requested, post_processed, prompt) =
         composer_history_fields(&text, original.as_deref(), mode.as_deref());
-    if let Err(e) = app
-        .state::<Arc<HistoryManager>>()
-        .save_entry(file_name, transcription_text, requested, post_processed, prompt)
-    {
+    if let Err(e) = app.state::<Arc<HistoryManager>>().save_entry(
+        file_name,
+        transcription_text,
+        requested,
+        post_processed,
+        prompt,
+    ) {
         error!("Failed to record composer commit in history: {e}");
     }
 
@@ -549,10 +577,7 @@ mod tests {
             classify_foreground_app("com.microsoft.vscode", "Code"),
             "editor"
         );
-        assert_eq!(
-            classify_foreground_app("com.apple.mail", "Mail"),
-            "mail"
-        );
+        assert_eq!(classify_foreground_app("com.apple.mail", "Mail"), "mail");
         assert_eq!(
             classify_foreground_app("com.apple.safari", "Safari"),
             "browser"

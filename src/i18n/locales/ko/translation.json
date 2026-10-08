@@ -766,14 +766,14 @@
     "keysHint": "Shift+Enter 줄바꿈",
     "openSettingsTitle": "설정 열기",
     "quickAriaLabel": "퀵 액션",
-    "correctionLabel": "맞춤법 보정",
-    "correctionTitle": "보정된 문장 적용",
-    "suggestAria": "문장 이어가기 추천",
-    "suggestTitle": "문장 이어가기",
-    "suggestSrcAi": "AI",
-    "suggestSrcLocal": "로컬",
-    "aiSuggest": "AI 추천",
-    "aiLoading": "생각 중…",
-    "aiSuggestTitle": "AI로 현재 문장 이어가기 추천"
+    "predictionsAria": "작성 추천",
+    "predictionsTitle": "작성 추천",
+    "predictionSrcProb": "로컬",
+    "predictionSrcBm25": "BM25",
+    "predictionSrcProvider": "AI",
+    "requestAiPredictions": "AI 추천",
+    "aiPredictLoading": "예측 중…",
+    "correctionLabel": "보정",
+    "correctionTitle": "로컬 오타 보정 적용"
   }
 }

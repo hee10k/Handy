@@ -126,7 +126,10 @@ pub fn get_transform_reasoning_effort(
     // Return the raw stored value (None when unset), not the baseline-adjusted
     // effective value, so the UI can distinguish an explicit "off" from the
     // inherited default.
-    Ok(settings.post_process_reasoning_effort.get(&provider_id).cloned())
+    Ok(settings
+        .post_process_reasoning_effort
+        .get(&provider_id)
+        .cloned())
 }
 
 /// Persist the reasoning/thinking level for a provider's transform requests.
@@ -151,7 +154,9 @@ pub fn set_transform_reasoning_effort(
     let mut settings = get_settings(&app);
     match effort {
         Some(value) if !value.trim().is_empty() => {
-            settings.post_process_reasoning_effort.insert(provider_id, value);
+            settings
+                .post_process_reasoning_effort
+                .insert(provider_id, value);
         }
         _ => {
             settings.post_process_reasoning_effort.remove(&provider_id);
@@ -180,11 +185,7 @@ pub fn get_quick_action_slots(app: AppHandle) -> Result<Vec<(u8, String)>, Strin
 /// (Cmd/Ctrl+1..0). `None` clears the slot. Slot index is 1-based, 1..=10.
 #[tauri::command]
 #[specta::specta]
-pub fn set_quick_action_slot(
-    app: AppHandle,
-    slot: u8,
-    mode: Option<String>,
-) -> Result<(), String> {
+pub fn set_quick_action_slot(app: AppHandle, slot: u8, mode: Option<String>) -> Result<(), String> {
     if !(1..=10).contains(&slot) {
         return Err("Quick-action slot must be between 1 and 10".to_string());
     }
@@ -250,7 +251,10 @@ pub async fn fetch_transform_models(
     llm_client::fetch_models(provider, api_key)
         .await
         .map_err(|e| {
-            error!("Failed to fetch models for provider '{}': {}", provider.id, e);
+            error!(
+                "Failed to fetch models for provider '{}': {}",
+                provider.id, e
+            );
             e
         })
 }
@@ -258,7 +262,10 @@ pub async fn fetch_transform_models(
 /// Read the stored API key for a provider through the secret store.
 #[tauri::command]
 #[specta::specta]
-pub fn get_transform_api_key(app: AppHandle, provider_id: String) -> Result<Option<String>, String> {
+pub fn get_transform_api_key(
+    app: AppHandle,
+    provider_id: String,
+) -> Result<Option<String>, String> {
     secret::get_api_key(&app, &provider_id).map_err(|e| e.to_string())
 }
 
