@@ -135,11 +135,6 @@ const Composer: React.FC = () => {
   const localPredictionRequestRef = useRef(0);
   const providerPredictionRequestRef = useRef(0);
 
-  // === POC probe (ticket 10 Task 1, 임시 — 라이브 검증 후 제거) ===
-  // keydown / beforeinput 이벤트를 console과 화면 하단 고정 div에 기록한다.
-  // 화면 기록은 웹뷰 console 을 직접 못 보는 상황에서 스크린샷으로 검증하기 위함.
-  const [pocEvents, setPocEvents] = useState<string[]>([]);
-
   // Refs for values the mount-once event listeners must read without stale
   // closures. `streaming` guards against stray deltas after done/error/cancel;
   // `originalText` is the stable pre-transform snapshot to restore on failure;
@@ -807,31 +802,7 @@ const Composer: React.FC = () => {
           // drops any redo tail — the ticket-05 edit-after-rewind rule).
           dispatchRevision({ type: "replace-current", text: next });
         }}
-        onKeyDown={(e) => {
-          // === POC probe (ticket 10 Task 1, 임시) ===
-          const poc = {
-            code: e.nativeEvent.code,
-            key: e.key,
-            isComposing: e.nativeEvent.isComposing,
-          };
-          console.log("[poc-keydown]", JSON.stringify(poc));
-          setPocEvents((arr) => [
-            ...arr.slice(-19),
-            "kd " + JSON.stringify(poc),
-          ]);
-          // === POC probe 끝 — 이후 기존 핸들러 그대로 ===
-          handleKeyDown(e);
-        }}
-        onBeforeInput={(e) => {
-          // === POC probe (ticket 10 Task 1, 임시) ===
-          const ie = e as unknown as InputEvent;
-          const poc = { type: ie.inputType, data: ie.data };
-          console.log("[poc-beforeinput]", JSON.stringify(poc));
-          setPocEvents((arr) => [
-            ...arr.slice(-19),
-            "bi " + JSON.stringify(poc),
-          ]);
-        }}
+        onKeyDown={handleKeyDown}
         onCompositionStart={() => setIsComposing(true)}
         onCompositionEnd={finalizeComposition}
         placeholder={t("composer.inputPlaceholder")}
@@ -839,29 +810,6 @@ const Composer: React.FC = () => {
         readOnly={streaming}
         spellCheck={false}
       />
-      {pocEvents.length > 0 && (
-        <div
-          className="composer__poc-probe"
-          style={{
-            position: "fixed",
-            left: 8,
-            bottom: 28,
-            zIndex: 9999,
-            maxWidth: "90%",
-            maxHeight: 160,
-            overflow: "auto",
-            background: "rgba(0,0,0,0.85)",
-            color: "#7fffd4",
-            font: "11px/1.4 ui-monospace, monospace",
-            padding: "4px 8px",
-            whiteSpace: "pre-wrap",
-            borderRadius: 4,
-          }}
-          aria-hidden="true"
-        >
-          {pocEvents.join("\n")}
-        </div>
-      )}
       {correction && !streaming && (
         <button
           type="button"
