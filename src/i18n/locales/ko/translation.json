@@ -774,6 +774,10 @@
     "requestAiPredictions": "AI 추천",
     "aiPredictLoading": "예측 중…",
     "correctionLabel": "보정",
-    "correctionTitle": "로컬 오타 보정 적용"
+    "correctionTitle": "로컬 오타 보정 적용",
+    "dualAria": "이중 언어 해석",
+    "dualKo": "한글",
+    "dualEn": "영어",
+    "dualPending": "1 한글 · 2 영어 선택"
   }
 }

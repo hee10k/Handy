@@ -774,6 +774,10 @@
     "requestAiPredictions": "AI suggestions",
     "aiPredictLoading": "Predicting…",
     "correctionLabel": "Corrected",
-    "correctionTitle": "Apply local spelling correction"
+    "correctionTitle": "Apply local spelling correction",
+    "dualAria": "Dual-language interpretation",
+    "dualKo": "Korean",
+    "dualEn": "English",
+    "dualPending": "Press 1 for Korean or 2 for English"
   }
 }

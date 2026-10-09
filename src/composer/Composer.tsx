@@ -12,6 +12,7 @@ import {
   revisionReducer,
 } from "./revisionReducer";
 import { diffTexts } from "./textDiff";
+import { keysToHangul } from "./dubeolsik";
 
 // Transform mode metadata, mirroring the backend `TransformModeInfo` (ticket 03).
 // We read it from `list_transform_modes` so the selector never hardcodes modes;
@@ -63,6 +64,23 @@ interface QuickActionSlot {
   slot: number; // 1..10, maps to Cmd/Ctrl+1..0
   mode: string; // transform mode id
 }
+
+// 이중 언어 입력 (ticket 10): 하나의 구(chunk) = 입력된 물리 키 시퀀스.
+// 한글창(keysToHangul)과 영어창(원시 키 그대로)을 동시에 렌더하고,
+// 1/2 (또는 Enter 후 1/2) 로 언어를 확정해 초안에 append 한다.
+interface ChunkState {
+  keys: string[]; // 물리 키 시퀀스 (영어창 원본). " " = 단어 경계
+  pending: boolean; // Enter 직후 1/2 선택 대기
+}
+const EMPTY_CHUNK: ChunkState = { keys: [], pending: false };
+
+// 물리 키(KeyD 등) → 출력 문자. 한글/영문 자판과 무관한 원시 키만 취급
+// (ticket 10): e.code 를 그대로 쓰므로 IME 상태에 영향받지 않는다.
+const keyChar = (code: string, shift: boolean): string | null => {
+  const m = /^Key([A-Z])$/.exec(code);
+  if (!m) return null;
+  return shift ? m[1] : m[1].toLowerCase();
+};
 
 // All candidates continue the current draft: local candidates replace a partial
 // trailing word, while AI candidates append a phrase or sentence.
@@ -129,6 +147,10 @@ const Composer: React.FC = () => {
   const [aiLoading, setAiLoading] = useState(false);
   const [hasPredictionProvider, setHasPredictionProvider] = useState(false);
   const [correction, setCorrection] = useState<string | null>(null);
+  // 이중 언어 입력 (ticket 10): 현재 구의 물리 키 시퀀스 + 두 언어 파생 텍스트.
+  const [chunk, setChunk] = useState<ChunkState>(EMPTY_CHUNK);
+  const koText = useMemo(() => keysToHangul(chunk.keys.join("")), [chunk.keys]);
+  const enText = useMemo(() => chunk.keys.join(""), [chunk.keys]);
   const correctionTimer = useRef<ReturnType<typeof setTimeout>>();
   const correctionRequestRef = useRef(0);
   const localPredictionTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -493,6 +515,20 @@ const Composer: React.FC = () => {
     textareaRef.current?.focus();
   };
 
+  // 이중 언어 입력 (ticket 10): 선택된 언어로 현재 구를 초안에 append 하고
+  // 리비전을 replace-current 로 갱신한다 (기존 applyPrediction/applyCorrection 와 동일 정책).
+  const commitChunk = (lang: "ko" | "en") => {
+    const text = lang === "ko" ? koText : enText;
+    setChunk(EMPTY_CHUNK);
+    setText((prev) => {
+      const sep = prev && !prev.endsWith(" ") ? " " : "";
+      const next = `${prev}${sep}${text} `;
+      dispatchRevision({ type: "replace-current", text: next });
+      return next;
+    });
+    textareaRef.current?.focus();
+  };
+
   const handleInstructionKeyDown = (
     e: React.KeyboardEvent<HTMLInputElement>,
   ) => {
@@ -615,6 +651,81 @@ const Composer: React.FC = () => {
       requestProviderPredictions();
       return;
     }
+    // === 이중 언어 입력 (ticket 10) ===
+    // modifier 없는 A-Z 는 물리 키로 캡처해 두바식 엔진으로 이중 해석한다.
+    // IME가 켜져 있어도 keydown 의 e.code 는 물리 키 그대로 도착한다 (Task 1 POC 실측).
+    const letter = keyChar(e.nativeEvent.code, e.shiftKey);
+    if (letter && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      setChunk((c) => ({ keys: [...c.keys, letter], pending: false }));
+      return;
+    }
+    // Space: 단어 경계 (두 창 모두 공백 반영)
+    if (e.key === " " && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      setChunk((c) => ({ keys: [...c.keys, " "], pending: false }));
+      return;
+    }
+    // Backspace: 구가 비어있지 않으면 양 창을 동시에 롤백
+    if (e.key === "Backspace" && chunk.keys.length > 0) {
+      e.preventDefault();
+      setChunk((c) => ({ keys: c.keys.slice(0, -1), pending: false }));
+      return;
+    }
+    // Enter: 구가 있으면 1/2 선택을 강제 (pending). 빈 구는 no-op.
+    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      if (chunk.keys.length > 0) setChunk((c) => ({ ...c, pending: true }));
+      return;
+    }
+    // 1/2: 구 확정 → 초안 append. 구가 없으면 1/2 는 일반 문자(리터럴).
+    if (
+      chunk.keys.length > 0 &&
+      (e.key === "1" || e.key === "2") &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.altKey
+    ) {
+      e.preventDefault();
+      commitChunk(e.key === "1" ? "ko" : "en");
+      return;
+    }
+    // ⌥(macOS)/Alt(Windows)+1/2: 리터럴 '1'/'2' 입력 (구가 없을 때에도 동작)
+    if (
+      e.altKey &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      (e.key === "1" || e.key === "2")
+    ) {
+      e.preventDefault();
+      setChunk((c) => ({ keys: [...c.keys, e.key], pending: false }));
+      return;
+    }
+    // 3-0 및 기타 문자/기호: 영어창에 리터럴 반영
+    if (
+      e.key.length === 1 &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      e.key !== " "
+    ) {
+      e.preventDefault();
+      setChunk((c) => ({ keys: [...c.keys, e.key], pending: false }));
+      return;
+    }
+    // Esc: 구가 있으면 폐기, 없으면 기존 동작(예측 닫기/취소/컴포저 닫기)
+    if (e.key === "Escape" && chunk.keys.length > 0) {
+      e.preventDefault();
+      setChunk(EMPTY_CHUNK);
+      return;
+    }
+    // Cmd/Ctrl+Enter: 최종 커밋 (기존 Enter 커밋을 modifier 로 이동)
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      if (!streaming) commit();
+      return;
+    }
+    // === 이중 언어 입력 끝 ===
     // Undo/redo across revisions (ticket 05). Meta = ⌘ on macOS, Ctrl elsewhere.
     if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z")) {
       e.preventDefault();
@@ -627,12 +738,6 @@ const Composer: React.FC = () => {
       e.preventDefault();
       if (streaming) return;
       redo();
-      return;
-    }
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      if (streaming) return; // never commit a partial stream
-      commit();
       return;
     }
     if (e.key === "Tab") {
@@ -810,6 +915,27 @@ const Composer: React.FC = () => {
         readOnly={streaming}
         spellCheck={false}
       />
+      {chunk.keys.length > 0 && (
+        <div
+          className="composer__dual"
+          role="region"
+          aria-label={t("composer.dualAria")}
+        >
+          <div className="composer__dual-row">
+            <span className="composer__dual-src">{t("composer.dualKo")}</span>
+            <span className="composer__dual-text">{koText}</span>
+          </div>
+          <div className="composer__dual-row">
+            <span className="composer__dual-src">{t("composer.dualEn")}</span>
+            <span className="composer__dual-text">{enText}</span>
+          </div>
+          {chunk.pending && (
+            <span className="composer__dual-pending">
+              {t("composer.dualPending")}
+            </span>
+          )}
+        </div>
+      )}
       {correction && !streaming && (
         <button
           type="button"
