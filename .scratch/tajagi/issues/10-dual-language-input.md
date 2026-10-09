@@ -410,32 +410,22 @@ if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
 ```
 
 - [ ] **Step 6: CSS — `.composer__dual` 계열** (기존 `.composer__correction` 배너 패턴 재사용: 상단/하단 padding, dashed border, small font)
-- [ ] **Step 7: i18n ko/en 키 추가**
-
-```json
-// en: composer 블록에 추가
-"dualAria": "Dual-language interpretation",
-"dualKo": "Korean",
-"dualEn": "English",
-"dualPending": "Press 1 for Korean or 2 for English",
-// ko: composer 블록에 추가
-"dualAria": "이중 언어 해석",
-"dualKo": "한글",
-"dualEn": "영어",
-"dualPending": "1 한글 · 2 영어 선택",
-```
-
-- [ ] **Step 8: 검증** — `bun run build`, `bun run lint`, `bunx prettier --check src/composer/Composer.tsx src/composer/Composer.css`
-- [ ] **Step 9: 커밋**
+- [ ] **Step 7: i18n ko/en 키 추가** ✅
+- [ ] **Step 8: 검증** — `bun run build`, `bun run lint`, `bunx prettier --check src/composer/Composer.tsx src/composer/Composer.css` ✅ (build/lint/prettier 통과)
+- [ ] **Step 9: 커밋** ✅ (23e291a + ed4d7c0 + dfd70a4)
 
 ## Task 4: 라이브 스모크 (POC 게이트)
 
-- [ ] tauri dev 재기동 (node_modules 복원 완료 — `bun install` 후 `bun run tauri dev`, pid 확인)
-- [ ] 컴포저 열고 한글 IME 무관하게 "dkssudgktpdy" 타이핑 → 한글창 `안녕하세요` / 영어창 `dkssudgktpdy` 동시 갱신 확인
-- [ ] 1 누르면 초안에 `안녕하세요` 추가, 2 누르면 `dkssudgktpdy` 추가
-- [ ] Enter → pending 표시, 1/2 강제, Esc 로 구 폐기/닫기
-- [ ] ⌥+1/2 리터럴, Backspace 롤백, Cmd/Ctrl+Enter 최종 커밋 (paste)
-- [ ] POC 스파이크 결과 기록 (keydown 도착 여부, 백업 플랜 필요 여부)
+- [ ] tauri dev 재기동 (node_modules 복원 완료 — `bun install` 후 `bun run tauri dev`, pid 확인) ✅
+- [ ] 컴포저 열고 한글 IME 무관하게 "dkssudgktpdy" 타이핑 → 한글창 `안녕하세요` / 영어창 `dkssudgktpdy` 동시 갱신 확인 ✅ (orca computer 실측 2026-10-09)
+- [ ] 1 누르면 초안에 `안녕하세요` 추가, 2 누르면 `dkssudgktpdy` 추가 ✅ (`dkssudgktpdy`→1→`안녕하세요`, `hello`→2→append `hello`)
+- [ ] Enter → pending 표시, 1/2 강제, Esc 로 구 폐기/닫기 ✅ (dualPending 요소 노출, Esc 후 초안 무변경)
+- [ ] ⌥+1/2 리터럴, Backspace 롤백, Cmd/Ctrl+Enter 최종 커밋 (paste) ✅ (`Composer commit pasted` 로그 확인, Backspace 는 code 리뷰 확인)
+- [ ] POC 스파이크 결과 기록 (keydown 도착 여부, 백업 플랜 필요 여부) ✅ 계획 A 유지 (Task 1)
+
+**라이브 스모크 추가 발견 (구현 중 수정):**
+- macOS WKWebView 에서 keydown `preventDefault` 만으로는 IME 가 조합 텍스트를 textarea 에 주입함 → **beforeinput 레벨 차단 + textarea `readOnly`**(초안 표시 전용) 로 해결. 커서/조합 표시는 `composer__dual` 패널이 대체.
+- `commitChunk` 는 `setText` updater 내부에서 `dispatchRevision` 을 호출하지 않도록 **렌더 스코프 text** 사용 (StrictMode 중복 방지).
 
 ## 확정 설계 요약
 
