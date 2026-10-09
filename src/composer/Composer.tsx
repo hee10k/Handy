@@ -518,14 +518,12 @@ const Composer: React.FC = () => {
   // 이중 언어 입력 (ticket 10): 선택된 언어로 현재 구를 초안에 append 하고
   // 리비전을 replace-current 로 갱신한다 (기존 applyPrediction/applyCorrection 와 동일 정책).
   const commitChunk = (lang: "ko" | "en") => {
-    const text = lang === "ko" ? koText : enText;
+    const picked = lang === "ko" ? koText : enText;
+    const sep = text && !text.endsWith(" ") ? " " : "";
+    const next = `${text}${sep}${picked} `;
     setChunk(EMPTY_CHUNK);
-    setText((prev) => {
-      const sep = prev && !prev.endsWith(" ") ? " " : "";
-      const next = `${prev}${sep}${text} `;
-      dispatchRevision({ type: "replace-current", text: next });
-      return next;
-    });
+    setText(next);
+    dispatchRevision({ type: "replace-current", text: next });
     textareaRef.current?.focus();
   };
 
