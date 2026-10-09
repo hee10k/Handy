@@ -523,6 +523,8 @@ const Composer: React.FC = () => {
     const next = `${text}${sep}${picked} `;
     setChunk(EMPTY_CHUNK);
     setText(next);
+    setLocalPredictions([]);
+    setProviderPredictions([]);
     dispatchRevision({ type: "replace-current", text: next });
     textareaRef.current?.focus();
   };
