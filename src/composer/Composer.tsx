@@ -910,9 +910,26 @@ const Composer: React.FC = () => {
         onKeyDown={handleKeyDown}
         onCompositionStart={() => setIsComposing(true)}
         onCompositionEnd={finalizeComposition}
+        onBeforeInput={(e) => {
+          // 이중 언어 입력 (ticket 10): textarea 는 초안 표시 전용. OS/IME 가
+          // keydown preventDefault 만으로는 조합 텍스트를 textarea 에 주입하므로
+          // beforeinput 레벨에서도 삽입을 차단한다 — 타이핑은 chunk 키 시퀀스로만
+          // 반영되고 1/2 확정 시 초안에 들어간다.
+          const ie = e as unknown as InputEvent;
+          if (
+            ie.inputType === "insertCompositionText" ||
+            ie.inputType === "insertText" ||
+            ie.inputType === "insertLineBreak"
+          ) {
+            e.preventDefault();
+          }
+        }}
         placeholder={t("composer.inputPlaceholder")}
         autoFocus
-        readOnly={streaming}
+        // readOnly: 초안 표시 전용. 타이핑은 keydown 캡처(chunk)로만 처리하고,
+        // macOS IME 가 textarea 에 조합을 주입하지 못하게 막는 가장 확실한 수단.
+        // 커서/조합 표시는 이중 해석 창(composer__dual)이 대신한다.
+        readOnly
         spellCheck={false}
       />
       {chunk.keys.length > 0 && (
