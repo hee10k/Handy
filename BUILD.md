@@ -61,6 +61,11 @@ ORT_LIB_LOCATION=$(brew --prefix onnxruntime)/lib ORT_PREFER_DYNAMIC_LINK=1 bun 
 > [Windows build fails with path-limit errors](#windows-build-fails-with-path-limit-errors-msb3491--ftk1011--msb6003)
 > in Troubleshooting.
 
+Dictionary correction uses SymSpell 6.8.4 or newer with its optional `gxhash`
+feature disabled. Keep the portable AHash backend for distributed builds;
+do not enable `target-cpu=native` or AES target features merely to work around
+the `Gxhash requires aes and sse2 intrinsics` error from SymSpell 6.8.3.
+
 #### Linux
 
 - Build essentials

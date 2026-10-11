@@ -79,7 +79,7 @@ natural = "0.5.0"
 regex = "1"
 # Local dictionary continuations: SymSpell edit-distance, word-frequency ranking,
 # and zstd decompression of the bundled wordfreq model files.
-symspell_rs = "6.8.3"
+symspell_rs = { version = "6.8.4", default-features = false }
 unicode-segmentation = "1.13"
 zstd = "0.13.3"
 # Text-based language ID (filler-word removal fallback); isolang bridges the
