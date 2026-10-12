@@ -156,27 +156,21 @@ jobs:
       # (no `vulkan` feature; see src-tauri/Cargo.toml), so ggml-vulkan is never
       # built there and no Vulkan SDK, headers, or glslc are needed.
       #
-      # Same maintained installer the Ubuntu ARM64 step uses. humbletim's
-      # installer (v1.2 is its latest release) caches through `actions/cache@v4`
-      # when cache: true, which still targets Node 20 — deprecated on current
-      # runners and the only such warning left in the build matrix. This action
-      # runs on node24 and caches the install directory via the @actions/cache
-      # library, so no stale action is pulled into the job.
+      # cache: false on purpose. That switch only skips re-downloading the
+      # installer (the install itself is never cached), and enabling it routes
+      # the step through actions/cache@v4 — still Node 20, which new runners
+      # force onto Node 24 and report as a deprecation warning. This action is
+      # what the build expects: it installs the SDK into <workspace>/VULKAN_SDK,
+      # the location CMake's Vulkan discovery resolves here. Installing
+      # elsewhere (C:\VulkanSDK\...) satisfies `VULKAN_SDK` and finds glslc, but
+      # ggml-vulkan's configure then resolves Vulkan::Vulkan to the workspace
+      # path and fails on a missing include/ directory.
       - name: Install Vulkan SDK (Windows x64)
         if: contains(inputs.platform, 'windows') && !contains(inputs.target, 'aarch64')
-        uses: jakoch/install-vulkan-sdk-action@v1
+        uses: humbletim/install-vulkan-sdk@v1.2
         with:
-          vulkan_version: 1.4.309.0
-          cache: true
-
-      # The SDK's tools are found through VULKAN_SDK/PATH: glslc for the
-      # ggml-vulkan shader-gen sub-build, and vulkan-1.dll when the Windows audit
-      # launches `handy --list-devices`. This action exports VULKAN_SDK only
-      # (humbletim's also prepended its bin directory to PATH), so do it here.
-      - name: Expose Vulkan SDK tools on PATH (Windows x64)
-        if: contains(inputs.platform, 'windows') && !contains(inputs.target, 'aarch64')
-        shell: pwsh
-        run: Add-Content -Path $env:GITHUB_PATH -Value "$env:VULKAN_SDK\Bin"
+          version: 1.4.309.0
+          cache: false
 
       - name: Cache trusted-signing-cli
         if: contains(inputs.platform, 'windows') && inputs.sign-binaries
