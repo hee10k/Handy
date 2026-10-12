@@ -1,5 +1,11 @@
 import { useCallback, useMemo, useState } from "react";
 import { useSettings } from "../../../hooks/useSettings";
+import { useSettingsStore } from "../../../stores/settingsStore";
+import {
+  readProviderApiKey,
+  useProviderCredential,
+  type CredentialFieldState,
+} from "../../../hooks/useProviderCredential";
 import { commands, type PostProcessProvider } from "@/bindings";
 import type { ModelOption } from "./types";
 import type { DropdownOption } from "../../ui/Dropdown";
@@ -14,9 +20,8 @@ type PostProcessProviderState = {
   baseUrl: string;
   handleBaseUrlChange: (value: string) => void;
   isBaseUrlUpdating: boolean;
-  apiKey: string;
-  handleApiKeyChange: (value: string) => void;
-  isApiKeyUpdating: boolean;
+  /** Selected provider's key field: text, saving state and retained warnings. */
+  credential: CredentialFieldState;
   model: string;
   handleModelChange: (value: string) => void;
   modelOptions: ModelOption[];
@@ -36,7 +41,6 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
     isUpdating,
     setPostProcessProvider,
     updatePostProcessBaseUrl,
-    updatePostProcessApiKey,
     updatePostProcessModel,
     fetchPostProcessModels,
     postProcessModelOptions,
@@ -60,9 +64,27 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
   const [appleIntelligenceUnavailable, setAppleIntelligenceUnavailable] =
     useState(false);
 
-  // Use settings directly as single source of truth
+  // Use settings directly as single source of truth for base_url and model; the
+  // key itself lives only in the native credential store, read through the
+  // shared credential lifecycle below.
   const baseUrl = selectedProvider?.base_url ?? "";
-  const apiKey = settings?.post_process_api_keys?.[selectedProviderId] ?? "";
+  const setPostProcessModelOptions = useSettingsStore(
+    (state) => state.setPostProcessModelOptions,
+  );
+
+  const handleCredentialCommitted = useCallback(
+    (providerId: string) => {
+      // Models are fetched with a specific key, so a key change invalidates the
+      // options cached for that provider.
+      setPostProcessModelOptions(providerId, []);
+    },
+    [setPostProcessModelOptions],
+  );
+
+  const credential = useProviderCredential(
+    selectedProviderId,
+    handleCredentialCommitted,
+  );
   const model = settings?.post_process_models?.[selectedProviderId] ?? "";
 
   const providerOptions = useMemo<DropdownOption[]>(() => {
@@ -84,23 +106,23 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
         const available = await commands.checkAppleIntelligenceAvailable();
         if (!available) {
           setAppleIntelligenceUnavailable(true);
-          // Don't return - still set the provider so dropdown shows the selection
-          // The backend gracefully handles unavailable Apple Intelligence
         }
       }
 
       await setPostProcessProvider(providerId);
 
-      // Auto-fetch available models for the new provider so the model dropdown
-      // reflects what's actually valid. Without this, a stale model value from
-      // a previous provider/base_url can persist and silently 404 at runtime.
-      // Skip when the provider isn't configured yet (no API key / empty base URL)
-      // to avoid unnecessary backend errors.
+      // Auto-fetch models for the new provider using THAT provider's key
       if (providerId !== APPLE_PROVIDER_ID) {
         const provider = providers.find((p) => p.id === providerId);
-        const apiKey = settings?.post_process_api_keys?.[providerId] ?? "";
+        // Eligibility comes from the newly selected provider's own stored key,
+        // never from the field text of the provider we just left.
+        const keyToCheck =
+          provider?.id === "custom"
+            ? null
+            : await readProviderApiKey(providerId);
+
         const hasBaseUrl = (provider?.base_url ?? "").trim() !== "";
-        const hasApiKey = apiKey.trim() !== "";
+        const hasApiKey = (keyToCheck ?? "").trim() !== "";
 
         if (provider?.id === "custom" ? hasBaseUrl : hasApiKey) {
           void fetchPostProcessModels(providerId);
@@ -112,7 +134,6 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
       setPostProcessProvider,
       fetchPostProcessModels,
       providers,
-      settings,
     ],
   );
 
@@ -127,16 +148,6 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
       }
     },
     [selectedProvider, baseUrl, updatePostProcessBaseUrl],
-  );
-
-  const handleApiKeyChange = useCallback(
-    (value: string) => {
-      const trimmed = value.trim();
-      if (trimmed !== apiKey) {
-        void updatePostProcessApiKey(selectedProviderId, trimmed);
-      }
-    },
-    [apiKey, selectedProviderId, updatePostProcessApiKey],
   );
 
   const handleModelChange = useCallback(
@@ -195,9 +206,6 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
   const isBaseUrlUpdating = isUpdating(
     `post_process_base_url:${selectedProviderId}`,
   );
-  const isApiKeyUpdating = isUpdating(
-    `post_process_api_key:${selectedProviderId}`,
-  );
   const isModelUpdating = isUpdating(
     `post_process_model:${selectedProviderId}`,
   );
@@ -219,9 +227,7 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
     baseUrl,
     handleBaseUrlChange,
     isBaseUrlUpdating,
-    apiKey,
-    handleApiKeyChange,
-    isApiKeyUpdating,
+    credential,
     model,
     handleModelChange,
     modelOptions,

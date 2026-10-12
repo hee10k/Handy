@@ -1,30 +1,19 @@
 //! API-key storage abstraction.
 //!
-//! The product intent (ADR 4 / SPEC S1) is to keep provider API keys in the OS
-//! keyring (macOS Keychain / Windows Credential Manager) via the `keyring`
-//! crate. Today the default backend keeps keys in the existing settings
-//! `post_process_api_keys` `SecretMap` — which matches shipped behavior and
-//! works in an unentitled macOS dev build with no extra native dependency.
+//! Stores provider API keys in native secure storage (macOS Keychain /
+//! Windows Credential Manager) on supported platforms, and in settings
+//! `post_process_api_keys` on Linux.
 //!
-//! The `keyring` backend is wired in behind the `keyring-store` cargo feature
-//! (off by default) so enabling it never touches the default build. When it is
-//! enabled, a one-way migration moves any non-empty keys still sitting in the
-//! settings SecretMap into the keyring and clears the plaintext copies.
-//!
-//! ## Packaging follow-up (macOS entitlements)
-//!
-//! A signed, packaged macOS build that stores to Keychain needs an app
-//! entitlement allowing keychain access. Add `keychain-access-groups` to the
-//! app entitlements file and re-sign. Until then the default
-//! `SettingsApiKeyStore` keeps dev builds functional.
+//! When starting on macOS/Windows, a verified one-way migration moves any
+//! non-empty keys still present in the settings SecretMap into the OS keyring
+//! and clears the plaintext copies upon verified readback.
 
-use crate::settings::SecretMap;
-use crate::settings::{get_settings, write_settings};
-#[cfg(feature = "keyring-store")]
-use log::info;
-use log::warn;
+use crate::settings::{mutate_settings_secret, read_settings_secret_map};
+use log::{info, warn};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Mutex;
 use tauri::AppHandle;
 
 /// Every API key is redacted from `Debug` output so a stray `{:?}` in logs or
@@ -69,8 +58,8 @@ pub trait ApiKeyStore {
     fn delete(&self, provider_id: &str) -> Result<(), SecretError>;
 }
 
-/// Default backend: settings `post_process_api_keys` SecretMap (shipped
-/// behavior, works in unentitled dev builds).
+/// Settings-backed store (`post_process_api_keys` SecretMap).
+/// Used on Linux as the primary store, and on macOS/Windows as the migration source.
 pub struct SettingsApiKeyStore {
     app: AppHandle,
 }
@@ -83,74 +72,70 @@ impl SettingsApiKeyStore {
 
 impl ApiKeyStore for SettingsApiKeyStore {
     fn get(&self, provider_id: &str) -> Result<Option<String>, SecretError> {
-        let settings = get_settings(&self.app);
-        Ok(settings
-            .post_process_api_keys
-            .get(provider_id)
-            .cloned()
-            .filter(|key| !key.trim().is_empty()))
+        read_settings_secret_map(&self.app)
+            .map(|keys| {
+                keys.get(provider_id)
+                    .cloned()
+                    .filter(|key| !key.trim().is_empty())
+            })
+            .map_err(SecretError::Store)
     }
 
     fn set(&self, provider_id: &str, key: &str) -> Result<(), SecretError> {
-        let mut settings = get_settings(&self.app);
-        settings
-            .post_process_api_keys
-            .insert(provider_id.to_string(), key.to_string());
-        write_settings(&self.app, settings);
-        Ok(())
+        mutate_settings_secret(&self.app, provider_id, Some(key)).map_err(SecretError::Store)
     }
 
     fn delete(&self, provider_id: &str) -> Result<(), SecretError> {
-        let mut settings = get_settings(&self.app);
-        settings
-            .post_process_api_keys
-            .insert(provider_id.to_string(), String::new());
-        write_settings(&self.app, settings);
-        Ok(())
+        mutate_settings_secret(&self.app, provider_id, None).map_err(SecretError::Store)
     }
 }
 
-/// Keyring-backed store intended for packaged builds. Compiled only when the
-/// `keyring-store` feature is enabled so the default build carries no native
-/// keychain dependency.
-#[cfg(feature = "keyring-store")]
+/// Keyring-backed store for macOS and Windows.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub struct KeyringApiKeyStore;
 
-#[cfg(feature = "keyring-store")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl ApiKeyStore for KeyringApiKeyStore {
     fn get(&self, provider_id: &str) -> Result<Option<String>, SecretError> {
         let entry = keyring::Entry::new("com.hee10k.tajagi.api-keys", provider_id)
-            .map_err(|e| SecretError::Store(e.to_string()))?;
+            .map_err(|_| SecretError::Store("Native credential entry unavailable".into()))?;
         match entry.get_password() {
             Ok(key) => Ok(Some(key)),
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(SecretError::Store(e.to_string())),
+            Err(_) => Err(SecretError::Store(
+                "Unable to read native credential".into(),
+            )),
         }
     }
 
     fn set(&self, provider_id: &str, key: &str) -> Result<(), SecretError> {
         let entry = keyring::Entry::new("com.hee10k.tajagi.api-keys", provider_id)
-            .map_err(|e| SecretError::Store(e.to_string()))?;
+            .map_err(|_| SecretError::Store("Native credential entry unavailable".into()))?;
         entry
             .set_password(key)
-            .map_err(|e| SecretError::Store(e.to_string()))?;
+            .map_err(|_| SecretError::Store("Unable to write native credential".into()))?;
         Ok(())
     }
 
     fn delete(&self, provider_id: &str) -> Result<(), SecretError> {
         let entry = keyring::Entry::new("com.hee10k.tajagi.api-keys", provider_id)
-            .map_err(|e| SecretError::Store(e.to_string()))?;
-        // Deleting a missing entry is a no-op success, matching settings delete.
-        let _ = entry.delete_credential();
-        Ok(())
+            .map_err(|_| SecretError::Store("Native credential entry unavailable".into()))?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err(SecretError::Store(
+                "Unable to delete native credential".into(),
+            )),
+        }
     }
 }
 
-/// In-memory store for tests and the migration unit tests.
+#[cfg(test)]
+/// In-memory store for unit tests and the migration test suite.
 pub struct MemoryApiKeyStore {
     keys: std::sync::Mutex<HashMap<String, String>>,
 }
 
+#[cfg(test)]
 impl MemoryApiKeyStore {
     pub fn new(keys: HashMap<String, String>) -> Self {
         Self {
@@ -159,21 +144,23 @@ impl MemoryApiKeyStore {
     }
 }
 
+#[cfg(test)]
 impl ApiKeyStore for MemoryApiKeyStore {
     fn get(&self, provider_id: &str) -> Result<Option<String>, SecretError> {
-        Ok(self
-            .keys
+        self.keys
             .lock()
-            .unwrap()
-            .get(provider_id)
-            .cloned()
-            .filter(|key| !key.trim().is_empty()))
+            .map(|keys| {
+                keys.get(provider_id)
+                    .cloned()
+                    .filter(|key| !key.trim().is_empty())
+            })
+            .map_err(|_| SecretError::Store("Test memory store synchronization failed".into()))
     }
 
     fn set(&self, provider_id: &str, key: &str) -> Result<(), SecretError> {
         self.keys
             .lock()
-            .unwrap()
+            .map_err(|_| SecretError::Store("Test memory store synchronization failed".into()))?
             .insert(provider_id.to_string(), key.to_string());
         Ok(())
     }
@@ -181,57 +168,248 @@ impl ApiKeyStore for MemoryApiKeyStore {
     fn delete(&self, provider_id: &str) -> Result<(), SecretError> {
         self.keys
             .lock()
-            .unwrap()
-            .insert(provider_id.to_string(), String::new());
+            .map_err(|_| SecretError::Store("Test memory store synchronization failed".into()))?
+            .remove(provider_id);
         Ok(())
     }
 }
 
-/// Resolve the API key for a provider through the compiled-in backend,
-/// preferring an already-populated keyring entry when available.
+/// Resolve the API key for a provider through the active store.
 pub fn get_api_key(app: &AppHandle, provider_id: &str) -> Result<Option<String>, SecretError> {
-    #[cfg(feature = "keyring-store")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        let keyring_store = KeyringApiKeyStore;
-        if let Some(key) = keyring_store.get(provider_id)? {
-            return Ok(Some(key));
-        }
+        let mut state = CREDENTIAL_STATE.lock().map_err(|_| {
+            SecretError::Unavailable("Credential synchronization unavailable".into())
+        })?;
+        let _ = app;
+        get_native_key(&mut state, &KeyringApiKeyStore, provider_id)
     }
-    SettingsApiKeyStore::new(app.clone()).get(provider_id)
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        SettingsApiKeyStore::new(app.clone()).get(provider_id)
+    }
 }
 
-/// Write an API key, preferring the keyring backend when enabled.
+/// Write an API key, targeting the OS keyring on macOS/Windows and settings on Linux.
 pub fn set_api_key(app: &AppHandle, provider_id: &str, key: &str) -> Result<(), SecretError> {
-    #[cfg(feature = "keyring-store")]
-    {
-        KeyringApiKeyStore.set(provider_id, key)?;
-        return Ok(());
+    if key.trim().is_empty() {
+        return delete_api_key(app, provider_id);
     }
-    SettingsApiKeyStore::new(app.clone()).set(provider_id, key)
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        let mut state = CREDENTIAL_STATE.lock().map_err(|_| {
+            SecretError::Unavailable("Credential synchronization unavailable".into())
+        })?;
+        set_native_key(
+            &mut state,
+            &SettingsApiKeyStore::new(app.clone()),
+            &KeyringApiKeyStore,
+            provider_id,
+            key,
+        )
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        SettingsApiKeyStore::new(app.clone()).set(provider_id, key)
+    }
 }
 
-/// Delete an API key, clearing any plaintext copy in the settings SecretMap so
-/// a previously-migrated key cannot linger.
+/// Delete an API key, clearing native credentials on macOS/Windows and settings on all platforms.
 pub fn delete_api_key(app: &AppHandle, provider_id: &str) -> Result<(), SecretError> {
-    #[cfg(feature = "keyring-store")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        KeyringApiKeyStore.delete(provider_id)?;
+        let mut state = CREDENTIAL_STATE.lock().map_err(|_| {
+            SecretError::Unavailable("Credential synchronization unavailable".into())
+        })?;
+        delete_native_key(
+            &mut state,
+            &SettingsApiKeyStore::new(app.clone()),
+            &KeyringApiKeyStore,
+            provider_id,
+        )
     }
-    SettingsApiKeyStore::new(app.clone()).delete(provider_id)
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        SettingsApiKeyStore::new(app.clone()).delete(provider_id)
+    }
 }
 
-/// Result of a one-way migration from the settings SecretMap into a better
-/// store. `migrated` is the number of keys that were actually moved; `skipped`
-/// counts providers that already had a keyring entry (so we don't clobber a
-/// newer value with the stale settings copy).
+/// Detailed outcome of migrating an individual provider's key.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrationOutcome {
+    Migrated,
+    Skipped,
+    Conflict,
+    Incomplete,
+    Failed(String),
+}
+
+/// Status of the one-way credential migration.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, specta::Type)]
+pub struct MigrationStatus {
+    pub outcomes: HashMap<String, MigrationOutcome>,
+}
+
+/// Aggregate summary report of a migration run.
 pub struct MigrationReport {
     pub migrated: usize,
     pub skipped: usize,
+    pub outcomes: HashMap<String, MigrationOutcome>,
 }
 
-/// Move non-empty provider keys from `source` into `dest`, then clear the moved
-/// keys from `source`. Keys already present in `dest` are left untouched on both
-/// sides (the keyring is authoritative once populated).
+#[derive(Default)]
+struct CredentialState {
+    migration: Option<MigrationStatus>,
+    source_scan_failed: bool,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+impl CredentialState {
+    fn require_initialized(&self) -> Result<(), SecretError> {
+        if self.migration.is_none() {
+            Err(SecretError::Unavailable(
+                "Credential migration is not ready".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn require_ready(&self, provider_id: &str) -> Result<(), SecretError> {
+        self.require_initialized()?;
+        let outcome = self
+            .migration
+            .as_ref()
+            .and_then(|status| status.outcomes.get(provider_id));
+        match outcome {
+            Some(MigrationOutcome::Migrated | MigrationOutcome::Skipped) => Ok(()),
+            Some(
+                MigrationOutcome::Conflict
+                | MigrationOutcome::Incomplete
+                | MigrationOutcome::Failed(_),
+            ) => Err(SecretError::Unavailable(
+                "Credential requires verified re-entry or removal".into(),
+            )),
+            None if self.source_scan_failed => Err(SecretError::Unavailable(
+                "Unable to read legacy credentials".into(),
+            )),
+            None => Ok(()),
+        }
+    }
+
+    fn record(&mut self, provider_id: &str, outcome: MigrationOutcome) {
+        if let Some(status) = &mut self.migration {
+            status.outcomes.insert(provider_id.to_string(), outcome);
+        }
+    }
+
+    fn failed(&mut self, provider_id: &str, message: &str) -> SecretError {
+        self.record(provider_id, MigrationOutcome::Failed(message.to_string()));
+        SecretError::Store(message.to_string())
+    }
+}
+
+static CREDENTIAL_STATE: Mutex<CredentialState> = Mutex::new(CredentialState {
+    migration: None,
+    source_scan_failed: false,
+});
+
+/// Return an owned snapshot of retained migration outcomes.
+pub fn get_migration_status() -> Option<MigrationStatus> {
+    CREDENTIAL_STATE
+        .lock()
+        .ok()
+        .and_then(|state| state.migration.clone())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn get_native_key(
+    state: &mut CredentialState,
+    native: &dyn ApiKeyStore,
+    provider_id: &str,
+) -> Result<Option<String>, SecretError> {
+    if state.source_scan_failed
+        && state
+            .migration
+            .as_ref()
+            .is_some_and(|status| !status.outcomes.contains_key(provider_id))
+    {
+        state.record(
+            provider_id,
+            MigrationOutcome::Failed("Unable to read legacy credentials".into()),
+        );
+    }
+    state.require_ready(provider_id)?;
+    native.get(provider_id)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn set_native_key(
+    state: &mut CredentialState,
+    source: &dyn ApiKeyStore,
+    native: &dyn ApiKeyStore,
+    provider_id: &str,
+    key: &str,
+) -> Result<(), SecretError> {
+    state.require_initialized()?;
+    if native.set(provider_id, key).is_err() {
+        return Err(state.failed(provider_id, "Unable to write native credential"));
+    }
+    match native.get(provider_id) {
+        Ok(Some(readback)) if readback == key => {}
+        Ok(_) => {
+            state.record(provider_id, MigrationOutcome::Conflict);
+            return Err(SecretError::Store(
+                "Native credential verification failed".into(),
+            ));
+        }
+        Err(_) => return Err(state.failed(provider_id, "Unable to verify native credential")),
+    }
+    if source.delete(provider_id).is_err() {
+        state.record(provider_id, MigrationOutcome::Incomplete);
+        return Err(SecretError::Store(
+            "Unable to durably remove legacy credential".into(),
+        ));
+    }
+    state.record(provider_id, MigrationOutcome::Migrated);
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn delete_native_key(
+    state: &mut CredentialState,
+    source: &dyn ApiKeyStore,
+    native: &dyn ApiKeyStore,
+    provider_id: &str,
+) -> Result<(), SecretError> {
+    state.require_initialized()?;
+    if native.delete(provider_id).is_err() {
+        return Err(state.failed(provider_id, "Unable to delete native credential"));
+    }
+    match native.get(provider_id) {
+        Ok(None) => {}
+        Ok(Some(_)) => {
+            state.record(provider_id, MigrationOutcome::Conflict);
+            return Err(SecretError::Store(
+                "Native credential removal verification failed".into(),
+            ));
+        }
+        Err(_) => {
+            return Err(state.failed(provider_id, "Unable to verify native credential removal"))
+        }
+    }
+    if source.delete(provider_id).is_err() {
+        state.record(provider_id, MigrationOutcome::Incomplete);
+        return Err(SecretError::Store(
+            "Unable to durably remove legacy credential".into(),
+        ));
+    }
+    state.record(provider_id, MigrationOutcome::Skipped);
+    Ok(())
+}
+
+/// Move source keys only after exact native verification and durable source removal.
 pub fn migrate_secret_map(
     source: &dyn ApiKeyStore,
     dest: &dyn ApiKeyStore,
@@ -239,77 +417,140 @@ pub fn migrate_secret_map(
 ) -> MigrationReport {
     let mut migrated = 0;
     let mut skipped = 0;
+    let mut outcomes = HashMap::new();
 
     for provider_id in providers {
-        // A destination value is authoritative: never clobber a newer key with
-        // the stale settings copy.
+        let source_key = match source.get(provider_id) {
+            Ok(Some(key)) if !key.trim().is_empty() => key,
+            Ok(_) => continue,
+            Err(_) => {
+                outcomes.insert(
+                    provider_id.clone(),
+                    MigrationOutcome::Failed("Unable to read legacy credential".into()),
+                );
+                continue;
+            }
+        };
         match dest.get(provider_id) {
             Ok(Some(existing)) if !existing.trim().is_empty() => {
-                skipped += 1;
+                if existing != source_key {
+                    outcomes.insert(provider_id.clone(), MigrationOutcome::Conflict);
+                } else if source.delete(provider_id).is_err() {
+                    outcomes.insert(provider_id.clone(), MigrationOutcome::Incomplete);
+                } else {
+                    skipped += 1;
+                    outcomes.insert(provider_id.clone(), MigrationOutcome::Skipped);
+                }
                 continue;
             }
             Ok(_) => {}
-            Err(e) => {
-                warn!(
-                    "Secret backend unavailable for provider '{}': {}",
-                    provider_id, e
+            Err(_) => {
+                outcomes.insert(
+                    provider_id.clone(),
+                    MigrationOutcome::Failed("Unable to read native credential".into()),
                 );
                 continue;
             }
         }
-        match source.get(provider_id) {
-            Ok(Some(key)) if !key.trim().is_empty() => match dest.set(provider_id, &key) {
-                Ok(()) => {
-                    let _ = source.delete(provider_id);
+        if dest.set(provider_id, &source_key).is_err() {
+            outcomes.insert(
+                provider_id.clone(),
+                MigrationOutcome::Failed("Unable to write native credential".into()),
+            );
+            continue;
+        }
+        match dest.get(provider_id) {
+            Ok(Some(readback)) if readback == source_key => {
+                if source.delete(provider_id).is_err() {
+                    outcomes.insert(provider_id.clone(), MigrationOutcome::Incomplete);
+                } else {
                     migrated += 1;
+                    outcomes.insert(provider_id.clone(), MigrationOutcome::Migrated);
                 }
-                Err(e) => warn!("Failed to migrate key for '{}': {}", provider_id, e),
-            },
-            _ => {}
+            }
+            Ok(_) => {
+                outcomes.insert(provider_id.clone(), MigrationOutcome::Conflict);
+            }
+            Err(_) => {
+                outcomes.insert(
+                    provider_id.clone(),
+                    MigrationOutcome::Failed("Unable to verify native credential".into()),
+                );
+            }
         }
     }
-
-    MigrationReport { migrated, skipped }
+    MigrationReport {
+        migrated,
+        skipped,
+        outcomes,
+    }
 }
 
-/// The settings-side source store for migration: reads from the SecretMap.
-pub fn settings_secret_map(app: &AppHandle) -> SecretMap {
-    get_settings(app).post_process_api_keys
-}
-
-/// Convenience list of provider ids currently carrying a non-empty key in the
-/// SecretMap, used by the migration scheduler.
-pub fn provider_ids_with_keys(app: &AppHandle) -> Vec<String> {
-    get_settings(app)
-        .post_process_api_keys
-        .iter()
-        .filter(|(_, v)| !v.trim().is_empty())
-        .map(|(id, _)| id.clone())
-        .collect()
-}
-
-/// One-way settings→keyring migration scheduled at startup. Non-blocking and
-/// a no-op on default builds (feature off → settings backend only), so it is
-/// safe to call unconditionally from startup. When `keyring-store` is enabled
-/// it moves any non-empty provider keys present in the settings SecretMap into
-/// the OS keyring and clears the plaintext copies; keys already in the keyring
-/// are left untouched (keyring is authoritative once populated).
-#[cfg_attr(not(feature = "keyring-store"), allow(unused_variables))]
+/// Run the verified startup migration while excluding all native credential operations.
 pub fn migrate_keys_to_keyring(app: &AppHandle) {
-    #[cfg(feature = "keyring-store")]
+    let Ok(mut state) = CREDENTIAL_STATE.lock() else {
+        warn!("Credential synchronization unavailable; migration did not complete");
+        return;
+    };
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        let provider_ids = provider_ids_with_keys(app);
-        if provider_ids.is_empty() {
-            return;
+        match read_settings_secret_map(app) {
+            Ok(keys) => {
+                let providers: Vec<String> = keys
+                    .iter()
+                    .filter(|(_, key)| !key.trim().is_empty())
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                let report = migrate_secret_map(
+                    &SettingsApiKeyStore::new(app.clone()),
+                    &KeyringApiKeyStore,
+                    &providers,
+                );
+                info!(
+                    "Credential migration: {} migrated, {} redundant copies removed, {} unresolved",
+                    report.migrated,
+                    report.skipped,
+                    report
+                        .outcomes
+                        .values()
+                        .filter(|outcome| matches!(
+                            outcome,
+                            MigrationOutcome::Conflict
+                                | MigrationOutcome::Incomplete
+                                | MigrationOutcome::Failed(_)
+                        ))
+                        .count()
+                );
+                state.source_scan_failed = false;
+                state.migration = Some(MigrationStatus {
+                    outcomes: report.outcomes,
+                });
+            }
+            Err(_) => {
+                warn!("Unable to read legacy credentials; credential consumers remain blocked");
+                state.source_scan_failed = true;
+                state.migration = Some(MigrationStatus {
+                    outcomes: crate::settings::get_default_settings()
+                        .post_process_providers
+                        .into_iter()
+                        .map(|provider| {
+                            (
+                                provider.id,
+                                MigrationOutcome::Failed(
+                                    "Unable to read legacy credentials".into(),
+                                ),
+                            )
+                        })
+                        .collect(),
+                });
+            }
         }
-        let app_for_task = app.clone();
-        tauri::async_runtime::spawn(async move {
-            let source = SettingsApiKeyStore::new(app_for_task.clone());
-            let report = migrate_secret_map(&source, &KeyringApiKeyStore, &provider_ids);
-            info!(
-                "Migrated {} provider API key(s) to the OS keyring ({} skipped)",
-                report.migrated, report.skipped
-            );
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = app;
+        state.migration = Some(MigrationStatus {
+            outcomes: HashMap::new(),
         });
     }
 }
@@ -331,18 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_store_get_set_delete() {
-        let store = MemoryApiKeyStore::new(HashMap::new());
-        assert_eq!(store.get("openai").unwrap(), None);
-        store.set("openai", "sk-secret").unwrap();
-        assert_eq!(store.get("openai").unwrap(), Some("sk-secret".to_string()));
-        store.delete("openai").unwrap();
-        assert_eq!(store.get("openai").unwrap(), None);
-    }
-
-    #[test]
     fn secret_debug_redacts_values() {
-        format!("{:?}", Secret(&"hunter2"));
         let out = format!("{:?}", Secret(&"hunter2"));
         assert!(!out.contains("hunter2"));
         assert!(out.contains("[REDACTED]"));
@@ -372,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_skips_providers_already_in_dest() {
+    fn migration_preserves_unequal_values_and_reports_conflict() {
         let mut source_keys = HashMap::new();
         source_keys.insert("openai".to_string(), "sk-stale".to_string());
         let source = MemoryApiKeyStore::new(source_keys.clone());
@@ -383,31 +613,336 @@ mod tests {
 
         let report = migrate_secret_map(&source, &dest, &keyrings());
         assert_eq!(report.migrated, 0);
-        assert_eq!(report.skipped, 1);
-        // The keyring value is authoritative; the stale settings copy is kept
-        // (not migrated, but also not deleted here — deletion is a follow-up).
+        assert_eq!(report.skipped, 0);
+        assert_eq!(report.outcomes["openai"], MigrationOutcome::Conflict);
         assert_eq!(dest.get("openai").unwrap(), Some("sk-fresh".to_string()));
         assert_eq!(source.get("openai").unwrap(), Some("sk-stale".to_string()));
     }
 
     #[test]
-    fn keyring_unavailable_surfaces_error_not_panic() {
-        // A store that always fails to read should yield a SecretError that a
-        // caller can surface, never a panic or a leaked value.
-        struct Broken;
-        impl ApiKeyStore for Broken {
-            fn get(&self, _: &str) -> Result<Option<String>, SecretError> {
-                Err(SecretError::Unavailable("keychain locked".to_string()))
+    fn migration_retains_legacy_key_when_native_readback_differs() {
+        struct CorruptingStore(MemoryApiKeyStore);
+        impl ApiKeyStore for CorruptingStore {
+            fn get(&self, id: &str) -> Result<Option<String>, SecretError> {
+                self.0.get(id)
             }
-            fn set(&self, _: &str, _: &str) -> Result<(), SecretError> {
-                Err(SecretError::Unavailable("keychain locked".to_string()))
+            fn set(&self, id: &str, _: &str) -> Result<(), SecretError> {
+                self.0.set(id, "different-test-only-value")
             }
-            fn delete(&self, _: &str) -> Result<(), SecretError> {
-                Err(SecretError::Unavailable("keychain locked".to_string()))
+            fn delete(&self, id: &str) -> Result<(), SecretError> {
+                self.0.delete(id)
             }
         }
-        let store = Broken;
-        let err = store.get("openai").unwrap_err();
-        assert!(matches!(err, SecretError::Unavailable(_)));
+        let source = MemoryApiKeyStore::new(HashMap::from([(
+            "p0-test".to_string(),
+            "legacy-test-only-value".to_string(),
+        )]));
+        let dest = CorruptingStore(MemoryApiKeyStore::new(HashMap::new()));
+
+        migrate_secret_map(&source, &dest, &[provider("p0-test")]);
+
+        assert_eq!(
+            source.get("p0-test").unwrap(),
+            Some("legacy-test-only-value".to_string())
+        );
+    }
+
+    #[test]
+    fn migration_does_not_report_completion_when_legacy_cleanup_fails() {
+        struct DeleteFailureStore(MemoryApiKeyStore);
+        impl ApiKeyStore for DeleteFailureStore {
+            fn get(&self, id: &str) -> Result<Option<String>, SecretError> {
+                self.0.get(id)
+            }
+            fn set(&self, id: &str, value: &str) -> Result<(), SecretError> {
+                self.0.set(id, value)
+            }
+            fn delete(&self, _: &str) -> Result<(), SecretError> {
+                Err(SecretError::Store("test persistence denied".to_string()))
+            }
+        }
+        let source = DeleteFailureStore(MemoryApiKeyStore::new(HashMap::from([(
+            "p0-test".to_string(),
+            "legacy-test-only-value".to_string(),
+        )])));
+        let dest = MemoryApiKeyStore::new(HashMap::new());
+
+        let report = migrate_secret_map(&source, &dest, &[provider("p0-test")]);
+
+        assert_eq!(report.migrated, 0);
+        assert_eq!(
+            source.get("p0-test").unwrap(),
+            Some("legacy-test-only-value".to_string())
+        );
+    }
+
+    #[test]
+    fn migration_removes_redundant_plaintext_after_equal_native_readback() {
+        let keys = HashMap::from([("p0-test".to_string(), "same-test-only-value".to_string())]);
+        let source = MemoryApiKeyStore::new(keys.clone());
+        let dest = MemoryApiKeyStore::new(keys);
+
+        migrate_secret_map(&source, &dest, &[provider("p0-test")]);
+
+        assert_eq!(source.get("p0-test").unwrap(), None);
+        assert_eq!(
+            dest.get("p0-test").unwrap(),
+            Some("same-test-only-value".to_string())
+        );
+    }
+
+    fn initialized_state(outcome: MigrationOutcome) -> CredentialState {
+        CredentialState {
+            migration: Some(MigrationStatus {
+                outcomes: HashMap::from([("openai".into(), outcome)]),
+            }),
+            source_scan_failed: false,
+        }
+    }
+
+    #[test]
+    fn readiness_blocks_pending_conflict_incomplete_and_failed_providers() {
+        let pending = CredentialState::default();
+        assert!(pending.require_ready("openai").is_err());
+        for outcome in [
+            MigrationOutcome::Conflict,
+            MigrationOutcome::Incomplete,
+            MigrationOutcome::Failed("test-only failure".into()),
+        ] {
+            assert!(initialized_state(outcome).require_ready("openai").is_err());
+        }
+        assert!(initialized_state(MigrationOutcome::Migrated)
+            .require_ready("openai")
+            .is_ok());
+        assert!(initialized_state(MigrationOutcome::Skipped)
+            .require_ready("absent")
+            .is_ok());
+        let mut failed_scan = initialized_state(MigrationOutcome::Migrated);
+        failed_scan.source_scan_failed = true;
+        assert!(failed_scan.require_ready("openai").is_ok());
+        assert!(failed_scan.require_ready("unknown-provider").is_err());
+    }
+
+    #[test]
+    fn explicit_reentry_verifies_cleanup_and_resolves_retained_conflict() {
+        let source = MemoryApiKeyStore::new(HashMap::from([(
+            "openai".into(),
+            "test-only-legacy".into(),
+        )]));
+        let native = MemoryApiKeyStore::new(HashMap::from([(
+            "openai".into(),
+            "test-only-native".into(),
+        )]));
+        let mut state = initialized_state(MigrationOutcome::Conflict);
+        set_native_key(&mut state, &source, &native, "openai", "test-only-native").unwrap();
+        assert_eq!(source.get("openai").unwrap(), None);
+        assert_eq!(
+            native.get("openai").unwrap(),
+            Some("test-only-native".into())
+        );
+        assert_eq!(
+            state.migration.unwrap().outcomes["openai"],
+            MigrationOutcome::Migrated
+        );
+    }
+
+    struct FailingStore {
+        keys: MemoryApiKeyStore,
+        fail_read: bool,
+        missing_read: bool,
+        fail_set: bool,
+        fail_delete: bool,
+        ignore_delete: bool,
+        corrupt_set: bool,
+    }
+
+    impl ApiKeyStore for FailingStore {
+        fn get(&self, id: &str) -> Result<Option<String>, SecretError> {
+            if self.fail_read {
+                Err(SecretError::Store("test-only raw error payload".into()))
+            } else if self.missing_read {
+                Ok(None)
+            } else {
+                self.keys.get(id)
+            }
+        }
+        fn set(&self, id: &str, key: &str) -> Result<(), SecretError> {
+            if self.fail_set {
+                Err(SecretError::Store("test-only raw error payload".into()))
+            } else {
+                self.keys.set(
+                    id,
+                    if self.corrupt_set {
+                        "test-only-corrupt"
+                    } else {
+                        key
+                    },
+                )
+            }
+        }
+        fn delete(&self, id: &str) -> Result<(), SecretError> {
+            if self.fail_delete {
+                Err(SecretError::Store("test-only raw error payload".into()))
+            } else if self.ignore_delete {
+                Ok(())
+            } else {
+                self.keys.delete(id)
+            }
+        }
+    }
+
+    fn failing_store() -> FailingStore {
+        FailingStore {
+            keys: MemoryApiKeyStore::new(HashMap::from([(
+                "openai".into(),
+                "test-only-retained".into(),
+            )])),
+            fail_read: false,
+            missing_read: false,
+            fail_set: false,
+            fail_delete: false,
+            ignore_delete: false,
+            corrupt_set: false,
+        }
+    }
+
+    #[test]
+    fn source_read_failure_is_failed_even_when_native_already_exists() {
+        let mut source = failing_store();
+        source.fail_read = true;
+        let native = failing_store();
+        let report = migrate_secret_map(&source, &native, &["openai".into()]);
+        assert_eq!(report.skipped, 0);
+        let MigrationOutcome::Failed(message) = &report.outcomes["openai"] else {
+            panic!("source failure must not be skipped");
+        };
+        assert!(!message.contains("raw error payload"));
+    }
+
+    #[test]
+    fn reentry_failure_never_cleans_source_or_unblocks_provider() {
+        for phase in 0..4 {
+            let source = failing_store();
+            let mut native = failing_store();
+            native.fail_set = phase == 0;
+            native.fail_read = phase == 1;
+            native.corrupt_set = phase == 2;
+            native.missing_read = phase == 3;
+            let mut state = initialized_state(MigrationOutcome::Conflict);
+            assert!(
+                set_native_key(&mut state, &source, &native, "openai", "test-only-new").is_err()
+            );
+            assert_eq!(
+                source.get("openai").unwrap(),
+                Some("test-only-retained".into())
+            );
+            assert!(state.require_ready("openai").is_err());
+        }
+    }
+
+    #[test]
+    fn reentry_cleanup_failure_stays_incomplete_until_durable_retry() {
+        let mut source = failing_store();
+        source.fail_delete = true;
+        let native = failing_store();
+        let mut state = initialized_state(MigrationOutcome::Conflict);
+        assert!(set_native_key(&mut state, &source, &native, "openai", "test-only-new").is_err());
+        assert_eq!(
+            state.migration.as_ref().unwrap().outcomes["openai"],
+            MigrationOutcome::Incomplete
+        );
+        assert_eq!(
+            source.get("openai").unwrap(),
+            Some("test-only-retained".into())
+        );
+        assert!(state.require_ready("openai").is_err());
+        source.fail_delete = false;
+        set_native_key(&mut state, &source, &native, "openai", "test-only-new").unwrap();
+        assert!(state.require_ready("openai").is_ok());
+    }
+
+    #[test]
+    fn deletion_failure_retains_source_and_verified_retry_resolves_status() {
+        let source = failing_store();
+        let mut native = failing_store();
+        native.fail_delete = true;
+        let mut state = initialized_state(MigrationOutcome::Conflict);
+        assert!(delete_native_key(&mut state, &source, &native, "openai").is_err());
+        assert_eq!(
+            source.get("openai").unwrap(),
+            Some("test-only-retained".into())
+        );
+        assert_eq!(
+            native.get("openai").unwrap(),
+            Some("test-only-retained".into())
+        );
+        assert!(state.require_ready("openai").is_err());
+        native.fail_delete = false;
+        delete_native_key(&mut state, &source, &native, "openai").unwrap();
+        assert_eq!(source.get("openai").unwrap(), None);
+        assert_eq!(native.get("openai").unwrap(), None);
+        assert!(state.require_ready("openai").is_ok());
+        delete_native_key(&mut state, &source, &native, "openai").unwrap();
+    }
+
+    #[test]
+    fn native_getter_never_consumes_retained_source_and_absence_is_ordinary_none() {
+        let native = MemoryApiKeyStore::new(HashMap::new());
+        let mut blocked = initialized_state(MigrationOutcome::Incomplete);
+        assert!(get_native_key(&mut blocked, &native, "openai").is_err());
+        let mut ready = initialized_state(MigrationOutcome::Migrated);
+        assert_eq!(get_native_key(&mut ready, &native, "openai").unwrap(), None);
+        let mut inaccessible = failing_store();
+        inaccessible.fail_read = true;
+        assert!(get_native_key(&mut ready, &inaccessible, "openai").is_err());
+        let native = failing_store();
+        assert!(get_native_key(&mut blocked, &native, "openai").is_err());
+        assert_eq!(
+            get_native_key(&mut ready, &native, "openai").unwrap(),
+            Some("test-only-retained".into())
+        );
+    }
+
+    #[test]
+    fn delete_requires_absence_readback_and_durable_source_cleanup() {
+        for phase in 0..3 {
+            let mut source = failing_store();
+            source.fail_delete = true;
+            let mut native = failing_store();
+            native.fail_read = phase == 0;
+            native.ignore_delete = phase == 2;
+            let mut state = initialized_state(MigrationOutcome::Conflict);
+            assert!(delete_native_key(&mut state, &source, &native, "openai").is_err());
+            assert!(state.require_ready("openai").is_err());
+            assert_eq!(
+                source.get("openai").unwrap(),
+                Some("test-only-retained".into())
+            );
+            if phase == 1 {
+                assert_eq!(
+                    state.migration.as_ref().unwrap().outcomes["openai"],
+                    MigrationOutcome::Incomplete
+                );
+                assert_eq!(native.get("openai").unwrap(), None);
+                source.fail_delete = false;
+                delete_native_key(&mut state, &source, &native, "openai").unwrap();
+                assert_eq!(source.get("openai").unwrap(), None);
+                assert!(state.require_ready("openai").is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn migration_retains_source_when_native_write_has_missing_readback() {
+        let source = failing_store();
+        let mut native = failing_store();
+        native.missing_read = true;
+        let report = migrate_secret_map(&source, &native, &["openai".into()]);
+        assert_eq!(report.migrated, 0);
+        assert_eq!(report.outcomes["openai"], MigrationOutcome::Conflict);
+        assert_eq!(
+            source.get("openai").unwrap(),
+            Some("test-only-retained".into())
+        );
     }
 }

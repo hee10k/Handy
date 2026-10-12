@@ -673,7 +673,6 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_voice_input_enabled_setting,
             shortcut::mark_onboarding_complete,
             shortcut::change_post_process_base_url_setting,
-            shortcut::change_post_process_api_key_setting,
             shortcut::change_post_process_model_setting,
             shortcut::set_post_process_provider,
             shortcut::fetch_post_process_models,
@@ -770,6 +769,7 @@ pub fn run(cli_args: CliArgs) {
             commands::transform::get_transform_api_key,
             commands::transform::set_transform_api_key,
             commands::transform::delete_transform_api_key,
+            commands::get_credential_status,
             commands::history::get_history_entries,
             commands::history::toggle_history_entry_saved,
             commands::history::get_audio_file_path,
@@ -887,6 +887,7 @@ pub fn run(cli_args: CliArgs) {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_macos_permissions::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(settings::settings_durability_plugin())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
@@ -985,8 +986,8 @@ pub fn run(cli_args: CliArgs) {
 
             initialize_core_logic(&app_handle);
 
-            // One-way settings→keyring API-key migration (no-op unless the
-            // `keyring-store` feature is enabled — see secret.rs).
+            // One-way settings→keyring API-key migration (synchronous, verified
+            // readback on macOS/Windows — see secret.rs).
             crate::secret::migrate_keys_to_keyring(&app_handle);
 
             // Secure Input monitor (macOS): detects stuck secure input that

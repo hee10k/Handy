@@ -5,10 +5,25 @@ pub mod models;
 pub mod transcription;
 pub mod transform;
 
+use crate::secret::{self, MigrationStatus};
 use crate::settings::{get_settings, write_settings, AppSettings, LogLevel};
 use crate::utils::cancel_current_operation;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
+
+#[derive(Serialize, Deserialize, Debug, Clone, specta::Type)]
+pub struct CredentialStatus {
+    pub migration: Option<MigrationStatus>,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_credential_status() -> Result<CredentialStatus, String> {
+    Ok(CredentialStatus {
+        migration: secret::get_migration_status(),
+    })
+}
 
 #[tauri::command]
 #[specta::specta]
@@ -34,13 +49,17 @@ pub fn get_app_dir_path(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 #[specta::specta]
 pub fn get_app_settings(app: AppHandle) -> Result<AppSettings, String> {
-    Ok(get_settings(&app))
+    let mut settings = get_settings(&app);
+    settings.post_process_api_keys.clear();
+    Ok(settings)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn get_default_settings() -> Result<AppSettings, String> {
-    Ok(crate::settings::get_default_settings())
+    let mut settings = crate::settings::get_default_settings();
+    settings.post_process_api_keys.clear();
+    Ok(settings)
 }
 
 #[tauri::command]

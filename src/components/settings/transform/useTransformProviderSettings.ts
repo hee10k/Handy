@@ -2,6 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettings } from "../../../hooks/useSettings";
 import { useSettingsStore } from "../../../stores/settingsStore";
+import {
+  readProviderApiKey,
+  useProviderCredential,
+  type CredentialFieldState,
+} from "../../../hooks/useProviderCredential";
 import type { PostProcessProvider } from "@/bindings";
 import type { ModelOption } from "../PostProcessingSettingsApi/types";
 import type { DropdownOption } from "../../ui/Dropdown";
@@ -27,9 +32,8 @@ type TransformProviderSettingsState = {
   baseUrl: string;
   handleBaseUrlChange: (value: string) => void;
   isBaseUrlUpdating: boolean;
-  apiKey: string;
-  handleApiKeyChange: (value: string) => void;
-  isApiKeyUpdating: boolean;
+  /** Selected provider's key field: text, saving state and retained warnings. */
+  credential: CredentialFieldState;
   model: string;
   handleModelChange: (value: string) => void;
   modelOptions: ModelOption[];
@@ -73,9 +77,7 @@ export const useTransformProviderSettings =
     const providers = settings?.post_process_providers || [];
 
     const selectedProviderId = useMemo(() => {
-      return (
-        settings?.post_process_provider_id || providers[0]?.id || "openai"
-      );
+      return settings?.post_process_provider_id || providers[0]?.id || "openai";
     }, [providers, settings?.post_process_provider_id]);
 
     const selectedProvider = useMemo(() => {
@@ -87,7 +89,20 @@ export const useTransformProviderSettings =
 
     const isAppleProvider = selectedProvider?.id === APPLE_PROVIDER_ID;
     const baseUrl = selectedProvider?.base_url ?? "";
-    const apiKey = settings?.post_process_api_keys?.[selectedProviderId] ?? "";
+
+    const handleCredentialCommitted = useCallback(
+      (providerId: string) => {
+        // Models are fetched with a specific key, so a key change invalidates the
+        // options cached for that provider.
+        setPostProcessModelOptions(providerId, []);
+      },
+      [setPostProcessModelOptions],
+    );
+
+    const credential = useProviderCredential(
+      selectedProviderId,
+      handleCredentialCommitted,
+    );
     const model = settings?.post_process_models?.[selectedProviderId] ?? "";
 
     // Apple Intelligence is excluded from the transform provider selector:
@@ -118,54 +133,54 @@ export const useTransformProviderSettings =
 
     const [reasoningEffort, setReasoningEffort] = useState("");
 
-  // Load the stored reasoning level for the selected provider (raw invoke so
-  // we stay decoupled from the generated bindings type for the new setting).
-  // Values: "" (unset/auto), "none" (thinking off), or one of REASONING_LEVELS.
-  useEffect(() => {
-    let disposed = false;
-    void invoke<string | null>("get_transform_reasoning_effort", {
-      providerId: selectedProviderId,
-    })
-      .then((value) => {
-        if (!disposed) {
-          setReasoningEffort(
-            value && loadableEfforts.includes(value) ? value : "",
-          );
-        }
-      })
-      .catch(() => {
-        if (!disposed) setReasoningEffort("");
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [selectedProviderId, refreshSettings]);
-
-  const handleReasoningEffortChange = useCallback(
-    (value: string) => {
-      // Mirror the pick into the dropdown immediately (it is the controlled
-      // value); the write is best-effort with a rollback on failure.
-      setReasoningEffort(value);
-      void invoke("set_transform_reasoning_effort", {
+    // Load the stored reasoning level for the selected provider (raw invoke so
+    // we stay decoupled from the generated bindings type for the new setting).
+    // Values: "" (unset/auto), "none" (thinking off), or one of REASONING_LEVELS.
+    useEffect(() => {
+      let disposed = false;
+      void invoke<string | null>("get_transform_reasoning_effort", {
         providerId: selectedProviderId,
-        effort: value || null,
       })
-        .then(() => refreshSettings())
-        .catch((err) => {
-          console.error("Failed to update transform reasoning effort:", err);
-          void invoke<string | null>("get_transform_reasoning_effort", {
-            providerId: selectedProviderId,
-          }).then((stored) =>
+        .then((value) => {
+          if (!disposed) {
             setReasoningEffort(
-              stored && loadableEfforts.includes(stored) ? stored : "",
-            ),
-          );
+              value && loadableEfforts.includes(value) ? value : "",
+            );
+          }
+        })
+        .catch(() => {
+          if (!disposed) setReasoningEffort("");
         });
-    },
-    [selectedProviderId, refreshSettings],
-  );
+      return () => {
+        disposed = true;
+      };
+    }, [selectedProviderId, refreshSettings]);
 
-  const handleProviderSelect = useCallback(
+    const handleReasoningEffortChange = useCallback(
+      (value: string) => {
+        // Mirror the pick into the dropdown immediately (it is the controlled
+        // value); the write is best-effort with a rollback on failure.
+        setReasoningEffort(value);
+        void invoke("set_transform_reasoning_effort", {
+          providerId: selectedProviderId,
+          effort: value || null,
+        })
+          .then(() => refreshSettings())
+          .catch((err) => {
+            console.error("Failed to update transform reasoning effort:", err);
+            void invoke<string | null>("get_transform_reasoning_effort", {
+              providerId: selectedProviderId,
+            }).then((stored) =>
+              setReasoningEffort(
+                stored && loadableEfforts.includes(stored) ? stored : "",
+              ),
+            );
+          });
+      },
+      [selectedProviderId, refreshSettings],
+    );
+
+    const handleProviderSelect = useCallback(
       async (providerId: string) => {
         if (providerId === selectedProviderId) return;
         if (providerId === APPLE_PROVIDER_ID) return; // never selectable (see providerOptions)
@@ -177,20 +192,22 @@ export const useTransformProviderSettings =
         // for the newly selected provider. Skip when it isn't configured yet.
         if (providerId !== APPLE_PROVIDER_ID) {
           const provider = providers.find((p) => p.id === providerId);
-          const pApiKey = settings?.post_process_api_keys?.[providerId] ?? "";
+          // Eligibility comes from the newly selected provider's own stored key,
+          // never from the field text of the provider we just left.
+          const pApiKey =
+            provider?.id === "custom"
+              ? null
+              : await readProviderApiKey(providerId);
+
           const hasBaseUrl = (provider?.base_url ?? "").trim() !== "";
-          if (provider?.id === "custom" ? hasBaseUrl : pApiKey.trim() !== "") {
+          const hasApiKey = (pApiKey ?? "").trim() !== "";
+
+          if (provider?.id === "custom" ? hasBaseUrl : hasApiKey) {
             void fetchTransformModels(providerId);
           }
         }
       },
-      [
-        selectedProviderId,
-        providers,
-        settings,
-        refreshSettings,
-        fetchTransformModels,
-      ],
+      [selectedProviderId, providers, refreshSettings, fetchTransformModels],
     );
 
     const handleBaseUrlChange = useCallback(
@@ -216,29 +233,7 @@ export const useTransformProviderSettings =
             );
         }
       },
-      [
-        selectedProvider,
-        selectedProviderId,
-        baseUrl,
-        refreshSettings,
-      ],
-    );
-
-    const handleApiKeyChange = useCallback(
-      (value: string) => {
-        const trimmed = value.trim();
-        if (trimmed !== apiKey) {
-          void invoke("set_transform_api_key", {
-            providerId: selectedProviderId,
-            key: trimmed,
-          })
-            .then(() => refreshSettings())
-            .catch((err) =>
-              console.error("Failed to update transform API key:", err),
-            );
-        }
-      },
-      [apiKey, selectedProviderId, refreshSettings],
+      [selectedProvider, selectedProviderId, baseUrl, refreshSettings],
     );
 
     const handleModelChange = useCallback(
@@ -303,9 +298,6 @@ export const useTransformProviderSettings =
     const isBaseUrlUpdating = isUpdating(
       `post_process_base_url:${selectedProviderId}`,
     );
-    const isApiKeyUpdating = isUpdating(
-      `post_process_api_key:${selectedProviderId}`,
-    );
     const isModelUpdating = isUpdating(
       `post_process_model:${selectedProviderId}`,
     );
@@ -324,9 +316,7 @@ export const useTransformProviderSettings =
       baseUrl,
       handleBaseUrlChange,
       isBaseUrlUpdating,
-      apiKey,
-      handleApiKeyChange,
-      isApiKeyUpdating,
+      credential,
       model,
       handleModelChange,
       modelOptions,

@@ -16,7 +16,8 @@
     "postProcessing": "Efterbehandling",
     "history": "Historik",
     "debug": "Fejlfinding",
-    "about": "Om"
+    "about": "Om",
+    "transform": "Transform"
   },
   "onboarding": {
     "subtitle": "For at komme i gang skal du vælge en transskriptionsmodel",
@@ -152,7 +153,8 @@
       "translation": "Kan oversætte til engelsk",
       "translate": "Oversæt",
       "streaming": "Viser live transskription, mens du taler"
-    }
+    },
+    "downloadingEllipsis": "Downloading..."
   },
   "settings": {
     "modelSettings": {
@@ -179,6 +181,10 @@
           "transcribe_with_post_process": {
             "name": "Genvej til efterbehandling",
             "description": "Valgfrit: En dedikeret genvej, der altid anvender AI-efterbehandling på din transskription."
+          },
+          "composer_open": {
+            "name": "Open Composer Hotkey",
+            "description": "The keyboard shortcut to open the always-on-top Tajagi composer window."
           }
         },
         "errors": {
@@ -605,6 +611,70 @@
           "details": "Handys lokale tale-til-tekst funktionalitet er bygget på transcribe.cpp og ggml. Tak for det fantastiske arbejde af Georgi Gerganov og bidragyderne."
         }
       }
+    },
+    "transform": {
+      "inputSource": {
+        "title": "Input Source",
+        "voiceInput": {
+          "label": "Voice Input",
+          "description": "Turn on speech-to-text (microphone) input. Off by default so Tajagi is composer-first: with this off, no speech model is downloaded and no microphone permission is requested. Enabling it re-exposes the microphone and model setup in Input and Models."
+        }
+      },
+      "shortcuts": {
+        "title": "Composer Shortcuts"
+      },
+      "quickActions": {
+        "titleGroup": "Quick Actions",
+        "title": "Assign quick actions",
+        "description": "Assign a transform mode to each slot. Use Cmd/Ctrl+1..0 while the composer is focused, or click the quick button. Empty slots are hidden and unbound; slots 1-4 ship with defaults.",
+        "emptyPlaceholder": "Empty"
+      },
+      "provider": {
+        "titleGroup": "AI Provider (Tajagi Transform)",
+        "title": "Provider",
+        "description": "Select the AI provider used to transform your typed text.",
+        "appleIntelligence": {
+          "unsupported": "Apple Intelligence isn't supported for Tajagi transform: the streaming transform used by Tajagi can't run on it. Pick a different provider below."
+        },
+        "baseUrl": {
+          "title": "Base URL",
+          "description": "API base URL for the selected provider. Only the custom provider can be edited.",
+          "placeholder": "https://api.openai.com/v1"
+        },
+        "apiKey": {
+          "title": "API Key",
+          "description": "API key for the selected provider.",
+          "placeholder": "sk-..."
+        },
+        "model": {
+          "title": "Model",
+          "descriptionCustom": "Provide the model identifier expected by your custom endpoint.",
+          "descriptionDefault": "Choose a model exposed by the selected provider.",
+          "placeholderWithOptions": "Search or select a model",
+          "placeholderNoOptions": "Type a model name",
+          "refreshModels": "Refresh models"
+        },
+        "reasoning": {
+          "auto": "Auto (provider default)",
+          "off": "Off (no thinking)",
+          "title": "Thinking level",
+          "description": "How much the model may reason before replying. Off skips thinking; higher levels spend more time and tokens reasoning.",
+          "placeholder": "Select thinking level"
+        }
+      },
+      "instructions": {
+        "title": "Custom Instructions"
+      }
+    },
+    "credentials": {
+      "apiKey": {
+        "loadFailed": "Couldn't read the saved API key. Enter your key again to continue.",
+        "saveFailed": "Couldn't save the API key. Check the key and try again.",
+        "deleteFailed": "Couldn't remove the API key. Try again.",
+        "migrationConflict": "A different key is already stored for this provider. Enter your key here to replace it, or clear the field and leave it to remove the stored key.",
+        "migrationIncomplete": "The key was saved, but the previous copy couldn't be removed. Enter the key again to finish, or clear the field and leave it to remove the stored key.",
+        "migrationFailed": "Secure storage rejected the key. Enter it again to retry."
+      }
     }
   },
   "footer": {
@@ -683,5 +753,45 @@
     "learnMore": "Sådan løser du det",
     "recorderBlocked": "Genveje kan ikke optages lige nu — macOS Secure Input blokerer tastehændelser. Løs advarslen om Secure Input først.",
     "dismiss": "Afvis"
+  },
+  "composer": {
+    "inputPlaceholder": "Choose Korean/English in Bilingual input, or type in Edit text. Cmd/Ctrl+Enter pastes the draft.",
+    "instructionPlaceholder": "Enter runs this instruction · Cmd/Ctrl+Enter pastes the draft",
+    "savedInstructionPlaceholder": "Pick a saved instruction…",
+    "savedInstructionLabel": "Saved instructions",
+    "diffEmpty": "The output matches the original (nothing transformed yet)",
+    "stateStreaming": "Transforming… Esc to cancel",
+    "stateComposing": "Composing…",
+    "stateIdle": "Cmd/Ctrl+Enter to paste · Esc to discard a chunk or cancel",
+    "modesAriaLabel": "Transform mode",
+    "diffAriaLabel": "Diff",
+    "undoTitle": "Previous revision (native undo remains available in Edit text)",
+    "undoAria": "Undo",
+    "redoTitle": "Next revision (native redo remains available in Edit text)",
+    "redoAria": "Redo",
+    "diffTitle": "Original vs. current result diff",
+    "diffAria": "Compare original",
+    "cancel": "Cancel",
+    "closeTitle": "Close composer",
+    "keysHint": "Bilingual input: 1/2 selects Korean/English · Edit text: Enter adds a new line",
+    "openSettingsTitle": "Open settings",
+    "quickAriaLabel": "Quick actions",
+    "predictionsAria": "Writing suggestions",
+    "predictionsTitle": "Writing suggestions",
+    "predictionSrcProb": "Local",
+    "predictionSrcBm25": "BM25",
+    "predictionSrcProvider": "AI",
+    "requestAiPredictions": "AI suggestions",
+    "aiPredictLoading": "Predicting…",
+    "correctionLabel": "Corrected",
+    "correctionTitle": "Apply local spelling correction",
+    "dualAria": "Dual-language interpretation",
+    "dualKo": "Korean",
+    "dualEn": "English",
+    "dualPending": "Click Korean (1) or English (2), or press 1/2 in Bilingual input",
+    "modeBilingual": "Bilingual input",
+    "modeEditText": "Edit text",
+    "inputModeSwitchAria": "Input mode",
+    "unconfirmedChunkWarning": "Click the Korean (1) or English (2) selection button, or switch to Bilingual input and press 1 or 2. Press Esc to discard the unconfirmed chunk."
   }
 }

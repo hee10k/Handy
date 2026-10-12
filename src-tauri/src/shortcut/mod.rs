@@ -1086,20 +1086,6 @@ fn validate_provider_exists(
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_post_process_api_key_setting(
-    app: AppHandle,
-    provider_id: String,
-    api_key: String,
-) -> Result<(), String> {
-    let mut settings = settings::get_settings(&app);
-    validate_provider_exists(&settings, &provider_id)?;
-    settings.post_process_api_keys.insert(provider_id, api_key);
-    settings::write_settings(&app, settings);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
 pub fn change_post_process_model_setting(
     app: AppHandle,
     provider_id: String,
@@ -1226,10 +1212,8 @@ pub async fn fetch_post_process_models(
     }
 
     // Get API key
-    let api_key = settings
-        .post_process_api_keys
-        .get(&provider_id)
-        .cloned()
+    let api_key = crate::secret::get_api_key(&app, &provider_id)
+        .map_err(|e| e.to_string())?
         .unwrap_or_default();
 
     // Skip fetching if no API key for providers that typically need one

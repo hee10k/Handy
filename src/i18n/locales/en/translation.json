@@ -665,6 +665,16 @@
       "instructions": {
         "title": "Custom Instructions"
       }
+    },
+    "credentials": {
+      "apiKey": {
+        "loadFailed": "Couldn't read the saved API key. Enter your key again to continue.",
+        "saveFailed": "Couldn't save the API key. Check the key and try again.",
+        "deleteFailed": "Couldn't remove the API key. Try again.",
+        "migrationConflict": "A different key is already stored for this provider. Enter your key here to replace it, or clear the field and leave it to remove the stored key.",
+        "migrationIncomplete": "The key was saved, but the previous copy couldn't be removed. Enter the key again to finish, or clear the field and leave it to remove the stored key.",
+        "migrationFailed": "Secure storage rejected the key. Enter it again to retry."
+      }
     }
   },
   "footer": {
@@ -745,25 +755,25 @@
     "dismiss": "Dismiss"
   },
   "composer": {
-    "inputPlaceholder": "Type, then pick a transform mode or paste with Enter",
-    "instructionPlaceholder": "Type an instruction, then press Enter — e.g. Summarize into two sentences",
+    "inputPlaceholder": "Choose Korean/English in Bilingual input, or type in Edit text. Cmd/Ctrl+Enter pastes the draft.",
+    "instructionPlaceholder": "Enter runs this instruction · Cmd/Ctrl+Enter pastes the draft",
     "savedInstructionPlaceholder": "Pick a saved instruction…",
     "savedInstructionLabel": "Saved instructions",
     "diffEmpty": "The output matches the original (nothing transformed yet)",
     "stateStreaming": "Transforming… Esc to cancel",
     "stateComposing": "Composing…",
-    "stateIdle": "Enter to commit · Esc to cancel",
+    "stateIdle": "Cmd/Ctrl+Enter to paste · Esc to discard a chunk or cancel",
     "modesAriaLabel": "Transform mode",
     "diffAriaLabel": "Diff",
-    "undoTitle": "Undo (⌘Z)",
+    "undoTitle": "Previous revision (native undo remains available in Edit text)",
     "undoAria": "Undo",
-    "redoTitle": "Redo (⇧⌘Z)",
+    "redoTitle": "Next revision (native redo remains available in Edit text)",
     "redoAria": "Redo",
     "diffTitle": "Original vs. current result diff",
     "diffAria": "Compare original",
     "cancel": "Cancel",
     "closeTitle": "Close composer",
-    "keysHint": "Shift+Enter for a new line",
+    "keysHint": "Bilingual input: 1/2 selects Korean/English · Edit text: Enter adds a new line",
     "openSettingsTitle": "Open settings",
     "quickAriaLabel": "Quick actions",
     "predictionsAria": "Writing suggestions",
@@ -778,6 +788,10 @@
     "dualAria": "Dual-language interpretation",
     "dualKo": "Korean",
     "dualEn": "English",
-    "dualPending": "Press 1 for Korean or 2 for English"
+    "dualPending": "Click Korean (1) or English (2), or press 1/2 in Bilingual input",
+    "modeBilingual": "Bilingual input",
+    "modeEditText": "Edit text",
+    "inputModeSwitchAria": "Input mode",
+    "unconfirmedChunkWarning": "Click the Korean (1) or English (2) selection button, or switch to Bilingual input and press 1 or 2. Press Esc to discard the unconfirmed chunk."
   }
 }

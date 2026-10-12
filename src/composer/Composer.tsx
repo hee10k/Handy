@@ -53,7 +53,7 @@ interface TransformErrorPayload {
 // before it snapshots text, so no partially-composed input is lost.
 interface PendingTransform {
   mode: string;
-  instruction: string;
+  instruction: string | null; // null reads the finalized custom-instruction editor
 }
 
 // Context-aware quick-action emphasis (ticket 09 MVP): the foreground app's
@@ -73,6 +73,9 @@ interface ChunkState {
   pending: boolean; // Enter 직후 1/2 선택 대기
 }
 const EMPTY_CHUNK: ChunkState = { keys: [], pending: false };
+
+type InputMode = "bilingual" | "edit";
+type ComposingEditor = "text" | "instruction";
 
 // 물리 키(KeyD 등) → 출력 문자. 한글/영문 자판과 무관한 원시 키만 취급
 // (ticket 10): e.code 를 그대로 쓰므로 IME 상태에 영향받지 않는다.
@@ -110,10 +113,8 @@ const CATEGORY_PREFERRED: Record<AppCategory, string[]> = {
   other: [], // keep assigned slot order
 };
 
-// IME input (한글 조합) must reach the textarea untouched. Our own hotkeys
-// (Enter = commit, Esc = cancel) are deliberately suppressed while the OS IME
-// is composing, so those keys keep their IME meanings (confirm / cancel the
-// composition) instead of firing a commit or close mid-syllable.
+// IME input must reach the editable textarea untouched. Final-commit and close
+// shortcuts retain their IME meaning while either editor is composing.
 const Composer: React.FC = () => {
   const { t } = useTranslation();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -149,6 +150,8 @@ const Composer: React.FC = () => {
   const [correction, setCorrection] = useState<string | null>(null);
   // 이중 언어 입력 (ticket 10): 현재 구의 물리 키 시퀀스 + 두 언어 파생 텍스트.
   const [chunk, setChunk] = useState<ChunkState>(EMPTY_CHUNK);
+  const [inputMode, setInputMode] = useState<InputMode>("bilingual");
+  const [chunkWarning, setChunkWarning] = useState<string | null>(null);
   const koText = useMemo(() => keysToHangul(chunk.keys.join("")), [chunk.keys]);
   const enText = useMemo(() => chunk.keys.join(""), [chunk.keys]);
   const correctionTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -165,6 +168,67 @@ const Composer: React.FC = () => {
   const originalTextRef = useRef("");
   const modeRef = useRef<string | null>(null);
   const pendingTransformRef = useRef<PendingTransform | null>(null);
+  const compositionRef = useRef<ComposingEditor | null>(null);
+  const inputModeRef = useRef<InputMode>("bilingual");
+  const pendingInputModeRef = useRef<InputMode | null>(null);
+  const chunkRef = useRef<ChunkState>(EMPTY_CHUNK);
+  // Text last written into the editor DOM. The textarea is uncontrolled (see
+  // `writeText`), so programmatic writes track the element through this ref
+  // instead of a React value prop.
+  const textValueRef = useRef("");
+
+  // Keep the editor uncontrolled on purpose. React's controlled <textarea>
+  // rewrites `node.defaultValue` on every commit (ReactDOMTextarea.updateWrapper:
+  // `node.defaultValue = newValue`), and that setter replaces the element's child
+  // text node. Each of those mutations ends Chromium's current typing session, so
+  // one typed run becomes one undo step per character. Leaving the DOM
+  // authoritative while the user types keeps the native undo/redo stack intact;
+  // every programmatic change goes through this single writer so the element and
+  // `text` never diverge.
+  const writeText = (update: string | ((current: string) => string)) => {
+    const next =
+      typeof update === "function" ? update(textValueRef.current) : update;
+    textValueRef.current = next;
+    const el = textareaRef.current;
+    if (el && el.value !== next) el.value = next;
+    setText(next);
+  };
+
+  const updateChunk = (
+    update: ChunkState | ((current: ChunkState) => ChunkState),
+  ) => {
+    const next =
+      typeof update === "function" ? update(chunkRef.current) : update;
+    chunkRef.current = next;
+    setChunk(next);
+  };
+
+  const applyInputMode = (next: InputMode) => {
+    inputModeRef.current = next;
+    setInputMode(next);
+  };
+
+  const requestInputMode = (next: InputMode) => {
+    if (streamingRef.current) return;
+    if (compositionRef.current) {
+      pendingInputModeRef.current = next;
+      return;
+    }
+    applyInputMode(next);
+    textareaRef.current?.focus();
+  };
+
+  const beginComposition = (editor: ComposingEditor) => {
+    if (editor === "text" && streamingRef.current) return;
+    compositionRef.current = editor;
+    setIsComposing(true);
+  };
+
+  const rejectUnconfirmedChunk = () => {
+    if (chunkRef.current.keys.length === 0) return false;
+    setChunkWarning(t("composer.unconfirmedChunkWarning"));
+    return true;
+  };
 
   // Load the transform modes from the backend (ticket 03 command).
   useEffect(() => {
@@ -268,9 +332,16 @@ const Composer: React.FC = () => {
   }, [text, streaming, isComposing]);
 
   const requestProviderPredictions = () => {
+    if (rejectUnconfirmedChunk()) return;
     const requestId = ++providerPredictionRequestRef.current;
     const draft = text.trim();
-    if (!draft || !hasPredictionProvider || streaming || isComposing) return;
+    if (
+      !draft ||
+      !hasPredictionProvider ||
+      streamingRef.current ||
+      compositionRef.current
+    )
+      return;
     setAiLoading(true);
     setProviderPredictions([]);
     void invoke<string[]>("suggest_llm_continuations", {
@@ -309,7 +380,7 @@ const Composer: React.FC = () => {
       if (disposed || streamingRef.current) return;
       const incoming = event.payload;
       if (!incoming) return;
-      setText((prev) => {
+      writeText((prev) => {
         const next =
           (prev && !prev.endsWith(" ") ? `${prev} ` : prev) + incoming;
         dispatchRevision({ type: "replace-current", text: next });
@@ -334,7 +405,7 @@ const Composer: React.FC = () => {
       const [onDelta, onDone, onError, onOpen] = await Promise.all([
         listen<TransformDeltaPayload>("transform-delta", (e) => {
           if (disposed || !streamingRef.current) return;
-          setText((t) => t + e.payload.delta);
+          writeText((t) => t + e.payload.delta);
         }),
         listen<TransformDonePayload>("transform-done", (e) => {
           if (
@@ -346,14 +417,16 @@ const Composer: React.FC = () => {
           streamingRef.current = false;
           setStreaming(false);
           setError(null);
-          setText(e.payload.text); // authoritative final result, now editable
+          writeText(e.payload.text); // authoritative final result, now editable
           dispatchRevision({ type: "append", text: e.payload.text });
+          if (compositionRef.current) pendingInputModeRef.current = "edit";
+          else applyInputMode("edit");
         }),
         listen<TransformErrorPayload>("transform-error", (e) => {
           if (disposed || e.payload.mode !== modeRef.current) return;
           streamingRef.current = false;
           setStreaming(false);
-          setText(originalTextRef.current); // never lose the typed text
+          writeText(originalTextRef.current); // never lose the typed text
           setError(e.payload.error);
         }),
         listen("composer-open", () => {
@@ -362,14 +435,19 @@ const Composer: React.FC = () => {
           void invoke("cancel_transform");
           streamingRef.current = false;
           pendingTransformRef.current = null;
+          pendingInputModeRef.current = null;
+          compositionRef.current = null;
           modeRef.current = null;
-          setText("");
+          writeText("");
           setOriginalText("");
           setMode(null);
           setInstruction("");
           setStreaming(false);
           setError(null);
           setIsComposing(false);
+          applyInputMode("bilingual");
+          updateChunk(EMPTY_CHUNK);
+          setChunkWarning(null);
           dispatchRevision({ type: "reset" });
           setShowDiff(false);
           setLocalPredictions([]);
@@ -404,6 +482,7 @@ const Composer: React.FC = () => {
   // original text (to restore on failure/cancel) and clears the textarea to
   // stream the fresh result into it.
   const transformNow = (selectedMode: string, instr: string) => {
+    if (streamingRef.current || rejectUnconfirmedChunk()) return;
     const el = textareaRef.current;
     const value = (el?.value ?? text).trim();
     if (value.length === 0) return; // empty/whitespace input is a no-op
@@ -416,7 +495,7 @@ const Composer: React.FC = () => {
     setStreaming(true);
     setError(null);
     setMode(selectedMode);
-    setText(""); // begin streaming the result fresh
+    writeText(""); // begin streaming the result fresh
     const payload: { mode: string; text: string; instruction?: string } = {
       mode: selectedMode,
       text: value,
@@ -429,7 +508,7 @@ const Composer: React.FC = () => {
       if (!streamingRef.current) return;
       streamingRef.current = false;
       setStreaming(false);
-      setText(originalTextRef.current);
+      writeText(originalTextRef.current);
       setError(String(err));
     });
   };
@@ -437,15 +516,22 @@ const Composer: React.FC = () => {
   // Request a transform. If the IME is mid-composition, defer until
   // `compositionend` so no syllable is dropped; otherwise run immediately.
   const requestTransform = (selectedMode: string, instr: string) => {
-    if (isComposing) {
-      pendingTransformRef.current = { mode: selectedMode, instruction: instr };
+    if (streamingRef.current || rejectUnconfirmedChunk()) return;
+    if (compositionRef.current) {
+      pendingTransformRef.current = {
+        mode: selectedMode,
+        instruction:
+          selectedMode === "custom" && compositionRef.current === "instruction"
+            ? null
+            : instr,
+      };
       return;
     }
     transformNow(selectedMode, instr);
   };
 
   const handleModeClick = (m: TransformModeInfo) => {
-    if (streaming) return; // selector is disabled mid-stream; defensive
+    if (streamingRef.current || rejectUnconfirmedChunk()) return;
     if (m.takes_instruction) {
       // Entering Custom: reveal the instruction input, transform on Enter.
       setMode(m.id);
@@ -458,7 +544,7 @@ const Composer: React.FC = () => {
   // Run a transform from a quick button or Cmd/Ctrl+shortcut (ticket 09).
   // Instruction-taking modes open the instruction input instead of running.
   const runQuickAction = (modeId: string) => {
-    if (streaming) return;
+    if (streamingRef.current || rejectUnconfirmedChunk()) return;
     const m = modes.find((x) => x.id === modeId);
     if (!m) return;
     if (m.takes_instruction) {
@@ -494,13 +580,14 @@ const Composer: React.FC = () => {
   // A local candidate completes the trailing word; an AI candidate always
   // appends to the current draft exactly as returned by the provider.
   const applyPrediction = (prediction: SentencePrediction) => {
+    if (streamingRef.current) return;
     const next =
       prediction.source === "provider"
         ? `${text}${text.endsWith(" ") || text.endsWith("\n") ? "" : " "}${prediction.text} `
         : text.endsWith(" ") || text.endsWith("\n")
           ? `${text}${prediction.text} `
           : `${text.replace(/\S+$/, "")}${prediction.text} `;
-    setText(next);
+    writeText(next);
     dispatchRevision({ type: "replace-current", text: next });
     setLocalPredictions([]);
     setProviderPredictions([]);
@@ -508,8 +595,8 @@ const Composer: React.FC = () => {
   };
 
   const applyCorrection = () => {
-    if (!correction) return;
-    setText(correction);
+    if (streamingRef.current || !correction) return;
+    writeText(correction);
     dispatchRevision({ type: "replace-current", text: correction });
     setCorrection(null);
     textareaRef.current?.focus();
@@ -518,11 +605,20 @@ const Composer: React.FC = () => {
   // 이중 언어 입력 (ticket 10): 선택된 언어로 현재 구를 초안에 append 하고
   // 리비전을 replace-current 로 갱신한다 (기존 applyPrediction/applyCorrection 와 동일 정책).
   const commitChunk = (lang: "ko" | "en") => {
-    const picked = lang === "ko" ? koText : enText;
-    const sep = text && !text.endsWith(" ") ? " " : "";
-    const next = `${text}${sep}${picked} `;
-    setChunk(EMPTY_CHUNK);
-    setText(next);
+    if (
+      streamingRef.current ||
+      compositionRef.current ||
+      chunkRef.current.keys.length === 0
+    )
+      return;
+    const raw = chunkRef.current.keys.join("");
+    const picked = lang === "ko" ? keysToHangul(raw) : raw;
+    const current = textareaRef.current?.value ?? text;
+    const sep = current && !current.endsWith(" ") ? " " : "";
+    const next = `${current}${sep}${picked} `;
+    updateChunk(EMPTY_CHUNK);
+    setChunkWarning(null);
+    writeText(next);
     setLocalPredictions([]);
     setProviderPredictions([]);
     dispatchRevision({ type: "replace-current", text: next });
@@ -532,7 +628,12 @@ const Composer: React.FC = () => {
   const handleInstructionKeyDown = (
     e: React.KeyboardEvent<HTMLInputElement>,
   ) => {
-    if (e.nativeEvent.isComposing) return; // let the IME finalize the instruction
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      if (!compositionRef.current) commit();
+      return;
+    }
     // Quick actions also work while the instruction input is focused.
     if ((e.metaKey || e.ctrlKey) && e.key >= "0" && e.key <= "9") {
       e.preventDefault();
@@ -543,34 +644,59 @@ const Composer: React.FC = () => {
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      requestTransform("custom", instruction);
+      requestTransform("custom", e.currentTarget.value);
+      return;
     }
     if (e.key === "Escape") {
+      if (compositionRef.current) return;
       e.preventDefault();
-      if (streaming) cancelInFlight();
+      if (chunkRef.current.keys.length > 0) {
+        updateChunk(EMPTY_CHUNK);
+        setChunkWarning(null);
+        return;
+      }
+      if (streamingRef.current) cancelInFlight();
       else cancel();
+      return;
     }
   };
 
-  const finalizeComposition = () => {
+  const completeComposition = (editor: ComposingEditor, value: string) => {
+    if (compositionRef.current !== editor) return;
+    compositionRef.current = null;
     setIsComposing(false);
-    // Pull the final (IME-committed) value straight from the DOM so the last
-    // composed syllable is never dropped, and mirror it into the revision draft
-    // so v0/current stays in sync with what the user actually typed.
-    const el = textareaRef.current;
-    if (el) {
-      setText(el.value);
-      dispatchRevision({ type: "replace-current", text: el.value });
+    const pendingMode = pendingInputModeRef.current;
+    const pendingTransform = pendingTransformRef.current;
+    pendingInputModeRef.current = null;
+    pendingTransformRef.current = null;
+    // The stream owns both the displayed result and the saved draft revision.
+    if (streamingRef.current) return;
+    if (editor === "text" && inputModeRef.current === "edit") {
+      writeText(value);
+      dispatchRevision({ type: "replace-current", text: value });
+    } else if (editor === "instruction") {
+      setInstruction(value);
     }
-    const pending = pendingTransformRef.current;
-    if (pending) {
-      pendingTransformRef.current = null;
-      transformNow(pending.mode, pending.instruction);
+    if (pendingMode) applyInputMode(pendingMode);
+    if (pendingTransform) {
+      transformNow(
+        pendingTransform.mode,
+        pendingTransform.instruction ??
+          instructionRef.current?.value ??
+          instruction,
+      );
     }
   };
 
   const commit = () => {
-    const value = text.trim();
+    if (
+      streamingRef.current ||
+      compositionRef.current ||
+      rejectUnconfirmedChunk()
+    )
+      return;
+    const current = textareaRef.current?.value ?? text;
+    const value = current.trim();
     // Empty text is ignored (backend enforces the same guard).
     if (value.length === 0) {
       void invoke("cancel_composer");
@@ -578,7 +704,7 @@ const Composer: React.FC = () => {
     }
     // Reuse the ticket-02 commit path: paste current textarea text at the
     // previously-focused app's cursor, then restore the clipboard.
-    void invoke("commit_composer", { text });
+    void invoke("commit_composer", { text: current });
   };
 
   const cancelInFlight = () => {
@@ -587,12 +713,15 @@ const Composer: React.FC = () => {
     void invoke("cancel_transform");
     streamingRef.current = false;
     pendingTransformRef.current = null;
+    pendingInputModeRef.current = null;
     setStreaming(false);
     setError(null);
-    setText(originalTextRef.current);
+    writeText(originalTextRef.current);
   };
 
   const cancel = () => {
+    pendingTransformRef.current = null;
+    pendingInputModeRef.current = null;
     void invoke("cancel_composer");
   };
 
@@ -612,20 +741,20 @@ const Composer: React.FC = () => {
   // into the textarea. Reading `revisionState` from the current render keeps the
   // target index correct without stale closures.
   const undo = () => {
-    if (!canUndo(revisionState)) return;
+    if (streamingRef.current || !canUndo(revisionState)) return;
     dispatchRevision({ type: "undo" });
-    setText(revisionState.revisions[revisionState.index - 1]);
+    writeText(revisionState.revisions[revisionState.index - 1]);
   };
   const redo = () => {
-    if (!canRedo(revisionState)) return;
+    if (streamingRef.current || !canRedo(revisionState)) return;
     dispatchRevision({ type: "redo" });
-    setText(revisionState.revisions[revisionState.index + 1]);
+    writeText(revisionState.revisions[revisionState.index + 1]);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // While the IME composes, Enter finalizes the current syllable and Esc
     // cancels the in-progress composition — never treat those as commit/close.
-    if (e.nativeEvent.isComposing) {
+    if (e.nativeEvent.isComposing || e.keyCode === 229) {
       return;
     }
     // Settings (Cmd+, / Ctrl+,) opens the main settings window from here.
@@ -651,36 +780,106 @@ const Composer: React.FC = () => {
       requestProviderPredictions();
       return;
     }
+    // Cmd/Ctrl+Enter: 최종 커밋
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      if (!compositionRef.current) commit();
+      return;
+    }
+    // Revision shortcuts are bilingual-only; edit mode keeps native history.
+    if (
+      inputModeRef.current === "bilingual" &&
+      (e.metaKey || e.ctrlKey) &&
+      (e.key === "z" || e.key === "Z")
+    ) {
+      e.preventDefault();
+      if (streamingRef.current) return;
+      if (e.shiftKey) redo();
+      else undo();
+      return;
+    }
+    if (
+      inputModeRef.current === "bilingual" &&
+      (e.metaKey || e.ctrlKey) &&
+      (e.key === "y" || e.key === "Y")
+    ) {
+      e.preventDefault();
+      if (streamingRef.current) return;
+      redo();
+      return;
+    }
+    if (e.key === "Tab") {
+      const first = [...localPredictions, ...providerPredictions][0];
+      if (first && !streamingRef.current && !aiLoading) {
+        e.preventDefault();
+        applyPrediction(first);
+      }
+      return;
+    }
+    if (e.key === "Escape") {
+      if (compositionRef.current) return;
+      e.preventDefault();
+      if (chunkRef.current.keys.length > 0) {
+        updateChunk(EMPTY_CHUNK);
+        setChunkWarning(null);
+        return;
+      }
+      if (chunkWarning) {
+        setChunkWarning(null);
+        return;
+      }
+      if (localPredictions.length > 0 || providerPredictions.length > 0) {
+        setLocalPredictions([]);
+        setProviderPredictions([]);
+        return;
+      }
+      if (streamingRef.current)
+        cancelInFlight(); // Esc cancels only the in-flight request
+      else cancel(); // nothing streaming: close the composer
+      return;
+    }
+
+    if (streamingRef.current) return;
+
+    // In Edit text mode, allow normal editing (letters, numbers, space, enter, backspace, etc.)
+    if (inputModeRef.current === "edit") {
+      return;
+    }
+
     // === 이중 언어 입력 (ticket 10) ===
     // modifier 없는 A-Z 는 물리 키로 캡처해 두바식 엔진으로 이중 해석한다.
     // IME가 켜져 있어도 keydown 의 e.code 는 물리 키 그대로 도착한다 (Task 1 POC 실측).
     const letter = keyChar(e.nativeEvent.code, e.shiftKey);
     if (letter && !e.metaKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault();
-      setChunk((c) => ({ keys: [...c.keys, letter], pending: false }));
+      setChunkWarning(null);
+      updateChunk((c) => ({ keys: [...c.keys, letter], pending: false }));
       return;
     }
     // Space: 단어 경계 (두 창 모두 공백 반영)
     if (e.key === " " && !e.metaKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault();
-      setChunk((c) => ({ keys: [...c.keys, " "], pending: false }));
+      setChunkWarning(null);
+      updateChunk((c) => ({ keys: [...c.keys, " "], pending: false }));
       return;
     }
     // Backspace: 구가 비어있지 않으면 양 창을 동시에 롤백
-    if (e.key === "Backspace" && chunk.keys.length > 0) {
+    if (e.key === "Backspace" && chunkRef.current.keys.length > 0) {
       e.preventDefault();
-      setChunk((c) => ({ keys: c.keys.slice(0, -1), pending: false }));
+      setChunkWarning(null);
+      updateChunk((c) => ({ keys: c.keys.slice(0, -1), pending: false }));
       return;
     }
     // Enter: 구가 있으면 1/2 선택을 강제 (pending). 빈 구는 no-op.
     if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
-      if (chunk.keys.length > 0) setChunk((c) => ({ ...c, pending: true }));
+      if (chunkRef.current.keys.length > 0)
+        updateChunk((c) => ({ ...c, pending: true }));
       return;
     }
     // 1/2: 구 확정 → 초안 append. 구가 없으면 1/2 는 일반 문자(리터럴).
     if (
-      chunk.keys.length > 0 &&
+      chunkRef.current.keys.length > 0 &&
       (e.key === "1" || e.key === "2") &&
       !e.metaKey &&
       !e.ctrlKey &&
@@ -698,7 +897,8 @@ const Composer: React.FC = () => {
       (e.key === "1" || e.key === "2")
     ) {
       e.preventDefault();
-      setChunk((c) => ({ keys: [...c.keys, e.key], pending: false }));
+      setChunkWarning(null);
+      updateChunk((c) => ({ keys: [...c.keys, e.key], pending: false }));
       return;
     }
     // 3-0 및 기타 문자/기호: 영어창에 리터럴 반영
@@ -710,54 +910,9 @@ const Composer: React.FC = () => {
       e.key !== " "
     ) {
       e.preventDefault();
-      setChunk((c) => ({ keys: [...c.keys, e.key], pending: false }));
+      setChunkWarning(null);
+      updateChunk((c) => ({ keys: [...c.keys, e.key], pending: false }));
       return;
-    }
-    // Esc: 구가 있으면 폐기, 없으면 기존 동작(예측 닫기/취소/컴포저 닫기)
-    if (e.key === "Escape" && chunk.keys.length > 0) {
-      e.preventDefault();
-      setChunk(EMPTY_CHUNK);
-      return;
-    }
-    // Cmd/Ctrl+Enter: 최종 커밋 (기존 Enter 커밋을 modifier 로 이동)
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-      e.preventDefault();
-      if (!streaming) commit();
-      return;
-    }
-    // === 이중 언어 입력 끝 ===
-    // Undo/redo across revisions (ticket 05). Meta = ⌘ on macOS, Ctrl elsewhere.
-    if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z")) {
-      e.preventDefault();
-      if (streaming) return; // never navigate mid-stream
-      if (e.shiftKey) redo();
-      else undo();
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && (e.key === "y" || e.key === "Y")) {
-      e.preventDefault();
-      if (streaming) return;
-      redo();
-      return;
-    }
-    if (e.key === "Tab") {
-      const first = [...localPredictions, ...providerPredictions][0];
-      if (first && !streaming && !aiLoading) {
-        e.preventDefault();
-        applyPrediction(first);
-      }
-      return;
-    }
-    if (e.key === "Escape") {
-      e.preventDefault();
-      if (localPredictions.length > 0 || providerPredictions.length > 0) {
-        setLocalPredictions([]);
-        setProviderPredictions([]);
-        return;
-      }
-      if (streaming)
-        cancelInFlight(); // Esc cancels only the in-flight request
-      else cancel(); // nothing streaming: close the composer
     }
   };
 
@@ -781,7 +936,9 @@ const Composer: React.FC = () => {
   return (
     <div
       className={`composer ${isComposing ? "composer--composing" : ""} ${streaming ? "composer--streaming" : ""}`}
-      onClick={() => textareaRef.current?.focus()}
+      onClick={() => {
+        if (!compositionRef.current) textareaRef.current?.focus();
+      }}
     >
       <div className="composer__glow" aria-hidden="true" />
       <div className="composer__topbar">
@@ -887,49 +1044,94 @@ const Composer: React.FC = () => {
             value={instruction}
             onChange={(e) => setInstruction(e.target.value)}
             onKeyDown={handleInstructionKeyDown}
-            onCompositionStart={() => setIsComposing(true)}
-            onCompositionEnd={finalizeComposition}
+            onCompositionStart={() => beginComposition("instruction")}
+            onCompositionEnd={(e) =>
+              completeComposition("instruction", e.currentTarget.value)
+            }
             placeholder={t("composer.instructionPlaceholder")}
             spellCheck={false}
           />
         </>
       )}
+      <div
+        className="composer__input-modes"
+        role="group"
+        aria-label={t("composer.inputModeSwitchAria")}
+      >
+        <button
+          type="button"
+          className={`composer__input-mode-btn ${
+            inputMode === "bilingual" ? "composer__input-mode-btn--active" : ""
+          }`}
+          disabled={streaming}
+          onPointerDown={(e) => e.preventDefault()}
+          onClick={(e) => {
+            e.stopPropagation();
+            requestInputMode("bilingual");
+          }}
+        >
+          {t("composer.modeBilingual")}
+        </button>
+        <button
+          type="button"
+          className={`composer__input-mode-btn ${
+            inputMode === "edit" ? "composer__input-mode-btn--active" : ""
+          }`}
+          disabled={streaming}
+          onPointerDown={(e) => e.preventDefault()}
+          onClick={(e) => {
+            e.stopPropagation();
+            requestInputMode("edit");
+          }}
+        >
+          {t("composer.modeEditText")}
+        </button>
+      </div>
+      {chunkWarning && (
+        <div className="composer__alert" role="alert" aria-live="assertive">
+          {chunkWarning}
+        </div>
+      )}
+      {/* Uncontrolled on purpose (see `writeText`): a controlled `value` prop
+          makes React rewrite <textarea>.defaultValue on every keystroke, which
+          closes Chromium's typing session and fragments native undo. */}
       <textarea
         ref={textareaRef}
         className="composer__input"
-        value={text}
         onChange={(e) => {
-          if (streaming) return;
+          if (streamingRef.current || inputModeRef.current !== "edit") return;
           const next = e.target.value;
           setProviderPredictions([]);
-          setText(next);
+          writeText(next);
           // Mirror the live draft into the current revision (replaces it and
           // drops any redo tail — the ticket-05 edit-after-rewind rule).
           dispatchRevision({ type: "replace-current", text: next });
         }}
         onKeyDown={handleKeyDown}
-        onCompositionStart={() => setIsComposing(true)}
-        onCompositionEnd={finalizeComposition}
+        onCompositionStart={() => beginComposition("text")}
+        onCompositionEnd={(e) =>
+          completeComposition("text", e.currentTarget.value)
+        }
         onBeforeInput={(e) => {
-          // 이중 언어 입력 (ticket 10): textarea 는 초안 표시 전용. OS/IME 가
-          // keydown preventDefault 만으로는 조합 텍스트를 textarea 에 주입하므로
-          // beforeinput 레벨에서도 삽입을 차단한다 — 타이핑은 chunk 키 시퀀스로만
-          // 반영되고 1/2 확정 시 초안에 들어간다.
-          const ie = e as unknown as InputEvent;
-          if (
-            ie.inputType === "insertCompositionText" ||
-            ie.inputType === "insertText" ||
-            ie.inputType === "insertLineBreak"
-          ) {
+          if (streamingRef.current) {
             e.preventDefault();
+            return;
+          }
+          // 이중 언어 입력 (ticket 10): bilingual 모드에서는 textarea 는 초안 표시 전용.
+          if (inputModeRef.current === "bilingual") {
+            const ie = e as unknown as InputEvent;
+            if (
+              ie.inputType === "insertCompositionText" ||
+              ie.inputType === "insertText" ||
+              ie.inputType === "insertLineBreak"
+            ) {
+              e.preventDefault();
+            }
           }
         }}
         placeholder={t("composer.inputPlaceholder")}
         autoFocus
-        // readOnly: 초안 표시 전용. 타이핑은 keydown 캡처(chunk)로만 처리하고,
-        // macOS IME 가 textarea 에 조합을 주입하지 못하게 막는 가장 확실한 수단.
-        // 커서/조합 표시는 이중 해석 창(composer__dual)이 대신한다.
-        readOnly
+        readOnly={streaming || inputMode !== "edit"}
         spellCheck={false}
       />
       {chunk.keys.length > 0 && (
@@ -939,10 +1141,34 @@ const Composer: React.FC = () => {
           aria-label={t("composer.dualAria")}
         >
           <div className="composer__dual-row">
+            <button
+              type="button"
+              className="composer__dual-btn"
+              disabled={streaming || isComposing}
+              onClick={(e) => {
+                e.stopPropagation();
+                commitChunk("ko");
+              }}
+              aria-label="1"
+            >
+              1
+            </button>
             <span className="composer__dual-src">{t("composer.dualKo")}</span>
             <span className="composer__dual-text">{koText}</span>
           </div>
           <div className="composer__dual-row">
+            <button
+              type="button"
+              className="composer__dual-btn"
+              disabled={streaming || isComposing}
+              onClick={(e) => {
+                e.stopPropagation();
+                commitChunk("en");
+              }}
+              aria-label="2"
+            >
+              2
+            </button>
             <span className="composer__dual-src">{t("composer.dualEn")}</span>
             <span className="composer__dual-text">{enText}</span>
           </div>

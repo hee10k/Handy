@@ -19,7 +19,9 @@ const localeModules = import.meta.glob<{ default: Record<string, unknown> }>(
 
 const resources: Record<string, { translation: Record<string, unknown> }> = {};
 for (const [path, module] of Object.entries(localeModules)) {
-  const langCode = path.match(/\.\/\.\.\/i18n\/locales\/(.+)\/translation\.json/)?.[1];
+  const langCode = path.match(
+    /(?:\.\/)?\.\.\/i18n\/locales\/([^/]+)\/translation\.json/,
+  )?.[1];
   if (langCode) {
     resources[langCode] = { translation: module.default };
   }
@@ -76,12 +78,11 @@ i18n.use(initReactI18next).init({
 // the OS locale when no saved preference exists — same behaviour as the main app.
 const syncLanguageFromSettings = async () => {
   try {
-    const result = await invoke<{
-      status: string;
-      data?: { app_language?: string | null };
-    }>("get_app_settings");
-    if (result.status === "ok" && result.data?.app_language) {
-      const supported = getSupportedLanguage(result.data.app_language);
+    const settings = await invoke<{ app_language?: string | null }>(
+      "get_app_settings",
+    );
+    if (settings.app_language) {
+      const supported = getSupportedLanguage(settings.app_language);
       if (supported && supported !== i18n.language) {
         await i18n.changeLanguage(supported);
       }

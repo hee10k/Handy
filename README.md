@@ -71,6 +71,12 @@ Handy is built as a Tauri application combining:
   - `rdev`: Global keyboard shortcuts and system events
   - `rubato`: Audio resampling
 
+### API Key Storage
+
+Provider API keys live in the operating system's native credential store — macOS Keychain and Windows Credential Manager (service `com.hee10k.tajagi.api-keys`, one entry per provider). Linux keeps using the settings store, so no macOS/Windows security claim applies there.
+
+macOS and Windows builds never write keys to plaintext settings. If a legacy plaintext key exists, it is migrated once at startup: the app writes it to the native store, reads it back and compares the exact value, and only then removes the plaintext copy. If the write, the readback, or the cleanup fails, or a different key is already stored for that provider, the legacy value is preserved and the provider stays blocked until you re-enter the key in Settings (the conflict is shown next to the API key field).
+
 ### Debug Mode
 
 Handy includes an advanced debug mode for development and troubleshooting. Access it by pressing:

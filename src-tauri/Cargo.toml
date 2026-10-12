@@ -19,18 +19,8 @@ incremental = true # Compile your binary in smaller steps.
 name = "handy_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-# Move provider API keys into the OS keyring (Keychain / Credential Manager).
-# Default-OFF: keeps cross-platform CI builds green and unentitled macOS dev
-# builds working without keychain entitlements. When enabled, API keys are
-# stored + read via keyring and one-way-migrated out of the settings file.
-# Packaged macOS releases should enable it and add `keychain-access-groups`
-# to the app entitlements.
 [features]
 default = []
-keyring-store = ["dep:keyring"]
-
-[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
-keyring = { version = "3", optional = true, default-features = false, features = ["apple-native"] }
 
 # [[bin]]
 # name = "cli"
@@ -43,6 +33,7 @@ serde = { version = "1", features = ["derive"] }
 
 [dependencies]
 once_cell = "1"
+tempfile = "3"
 tauri = { version = "2.11.5", features = [
   "protocol-asset",
   "macos-private-api",
@@ -139,6 +130,7 @@ windows = { version = "0.61.3", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.55"
+keyring = { version = "3", default-features = false, features = ["windows-native"] }
 
 # Whisper backend per Windows arch. x86_64 ships the Vulkan GPU backend and
 # keeps the dynamic-backends posture (loadable per-ISA CPU modules + Vulkan),
@@ -171,6 +163,7 @@ objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-app-kit = "0.3"
 objc2-service-management = "0.3.2"
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk-layer-shell = { version = "0.8", features = ["v0_6"] }
@@ -202,7 +195,7 @@ tao = { git = "https://github.com/cjpais/tao", rev = "c3bee28c1d446d95f08c95c3b6
 tao-macros = { git = "https://github.com/cjpais/tao", rev = "c3bee28c1d446d95f08c95c3b6f8d4bde052b876" }
 
 [dev-dependencies]
-tempfile = "3"
+tauri = { version = "2.11.5", features = ["test"] }
 # Test-only tokio features for the local socket servers exercising the
 # resumable HTTP downloader; normal builds keep the leaner feature set.
 tokio = { version = "1.43.0", features = ["macros", "net", "io-util", "sync", "time", "rt-multi-thread"] }

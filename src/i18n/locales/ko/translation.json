@@ -665,6 +665,16 @@
       "instructions": {
         "title": "커스텀 지시문"
       }
+    },
+    "credentials": {
+      "apiKey": {
+        "loadFailed": "저장된 API 키를 읽지 못했습니다. 키를 다시 입력해 주세요.",
+        "saveFailed": "API 키를 저장하지 못했습니다. 키를 확인한 뒤 다시 시도해 주세요.",
+        "deleteFailed": "API 키를 삭제하지 못했습니다. 다시 시도해 주세요.",
+        "migrationConflict": "이 제공자에는 다른 키가 이미 저장되어 있습니다. 키를 다시 입력하면 교체되고, 입력란을 비운 뒤 포커스를 옮기면 저장된 키가 삭제됩니다.",
+        "migrationIncomplete": "키는 저장되었지만 이전 복사본을 삭제하지 못했습니다. 키를 다시 입력하면 마무리되고, 입력란을 비운 뒤 포커스를 옮기면 저장된 키가 삭제됩니다.",
+        "migrationFailed": "보안 저장소가 키를 거부했습니다. 키를 다시 입력해 주세요."
+      }
     }
   },
   "footer": {
@@ -745,25 +755,25 @@
     "dismiss": "닫기"
   },
   "composer": {
-    "inputPlaceholder": "타자기 컴포저 — 입력 후 변환 모드를 고르거나 Enter로 붙여넣기",
-    "instructionPlaceholder": "지시 입력 후 Enter — 예: 두 문장으로 요약해 줘",
+    "inputPlaceholder": "한영 입력에서 언어를 선택하거나 텍스트 편집에서 입력하세요. Cmd/Ctrl+Enter로 초안을 붙여넣습니다.",
+    "instructionPlaceholder": "Enter로 지시 실행 · Cmd/Ctrl+Enter로 초안 붙여넣기",
     "savedInstructionPlaceholder": "저장된 지시문 선택…",
     "savedInstructionLabel": "저장된 지시문",
     "diffEmpty": "변환 전이라 원문과 같습니다",
     "stateStreaming": "변환 중 · Esc로 취소",
     "stateComposing": "조합 중",
-    "stateIdle": "Enter 커밋 · Esc 취소",
+    "stateIdle": "Cmd/Ctrl+Enter로 붙여넣기 · Esc로 미확정 입력 지우기 또는 취소",
     "modesAriaLabel": "변환 모드",
     "diffAriaLabel": "diff",
-    "undoTitle": "실행 취소 (⌘Z)",
+    "undoTitle": "이전 리비전 (텍스트 편집에서는 기본 실행 취소 사용 가능)",
     "undoAria": "실행 취소",
-    "redoTitle": "다시 실행 (⇧⌘Z)",
+    "redoTitle": "다음 리비전 (텍스트 편집에서는 기본 다시 실행 사용 가능)",
     "redoAria": "다시 실행",
     "diffTitle": "원문 v0 ↔ 현재 결과 diff",
     "diffAria": "원문 비교",
     "cancel": "취소",
     "closeTitle": "컴포저 닫기",
-    "keysHint": "Shift+Enter 줄바꿈",
+    "keysHint": "한영 입력: 1/2로 한국어/영어 선택 · 텍스트 편집: Enter로 줄바꿈",
     "openSettingsTitle": "설정 열기",
     "quickAriaLabel": "퀵 액션",
     "predictionsAria": "작성 추천",
@@ -778,6 +788,10 @@
     "dualAria": "이중 언어 해석",
     "dualKo": "한글",
     "dualEn": "영어",
-    "dualPending": "1 한글 · 2 영어 선택"
+    "dualPending": "한국어(1) 또는 영어(2) 버튼을 클릭하거나 한영 입력 모드에서 1/2를 누르세요",
+    "modeBilingual": "한영 입력",
+    "modeEditText": "텍스트 편집",
+    "inputModeSwitchAria": "입력 모드",
+    "unconfirmedChunkWarning": "한국어(1) 또는 영어(2) 선택 버튼을 클릭하거나, 한영 입력 모드로 전환해 1 또는 2를 누르세요. 미확정 입력을 버리려면 Esc를 누르세요."
   }
 }

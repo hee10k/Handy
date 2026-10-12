@@ -4,10 +4,7 @@ import { RefreshCcw } from "lucide-react";
 
 import { Alert } from "../../ui/Alert";
 import { Select } from "../../ui/Select";
-import {
-  SettingContainer,
-  SettingsGroup,
-} from "@/components/ui";
+import { SettingContainer, SettingsGroup } from "@/components/ui";
 import { ResetButton } from "../../ui/ResetButton";
 
 import { ProviderSelect } from "../PostProcessingSettingsApi/ProviderSelect";
@@ -52,9 +49,7 @@ const TransformProviderConfig: React.FC = () => {
           {state.selectedProvider?.id === "custom" && (
             <SettingContainer
               title={t("settings.transform.provider.baseUrl.title")}
-              description={t(
-                "settings.transform.provider.baseUrl.description",
-              )}
+              description={t("settings.transform.provider.baseUrl.description")}
               descriptionMode="tooltip"
               layout="horizontal"
               grouped={true}
@@ -82,11 +77,16 @@ const TransformProviderConfig: React.FC = () => {
           >
             <div className="flex items-center gap-2">
               <ApiKeyField
-                value={state.apiKey}
-                onBlur={state.handleApiKeyChange}
-                placeholder={t("settings.transform.provider.apiKey.placeholder")}
-                disabled={state.isApiKeyUpdating}
-                className="min-w-[320px]"
+                value={state.credential.value}
+                onChange={state.credential.setValue}
+                onBlur={state.credential.commit}
+                placeholder={t(
+                  "settings.transform.provider.apiKey.placeholder",
+                )}
+                disabled={state.credential.isSaving}
+                className="min-w-[380px]"
+                error={state.credential.error}
+                migrationWarning={state.credential.migrationWarning}
               />
             </div>
           </SettingContainer>
@@ -95,85 +95,86 @@ const TransformProviderConfig: React.FC = () => {
 
       {!state.isAppleProvider && (
         <>
-        <SettingContainer
-          title={t("settings.transform.provider.model.title")}
-          description={
-            state.isCustomProvider
-              ? t("settings.transform.provider.model.descriptionCustom")
-              : t("settings.transform.provider.model.descriptionDefault")
-          }
-          descriptionMode="tooltip"
-          layout="stacked"
-          grouped={true}
-        >
-          <div className="flex items-center gap-2">
-            <ModelSelect
-              value={state.model}
-              options={state.modelOptions}
-              disabled={state.isModelUpdating}
-              isLoading={state.isFetchingModels}
-              placeholder={
-                state.modelOptions.length > 0
-                  ? t(
-                      "settings.transform.provider.model.placeholderWithOptions",
-                    )
-                  : t(
-                      "settings.transform.provider.model.placeholderNoOptions",
-                    )
-              }
-              onSelect={state.handleModelSelect}
-              onCreate={state.handleModelCreate}
-              onBlur={() => {}}
-              className="flex-1 min-w-[380px]"
-            />
-            <ResetButton
-              onClick={state.handleRefreshModels}
-              disabled={state.isFetchingModels}
-              ariaLabel={t("settings.transform.provider.model.refreshModels")}
-              className="flex h-10 w-10 items-center justify-center"
-            >
-              <RefreshCcw
-                className={`h-4 w-4 ${state.isFetchingModels ? "animate-spin" : ""}`}
+          <SettingContainer
+            title={t("settings.transform.provider.model.title")}
+            description={
+              state.isCustomProvider
+                ? t("settings.transform.provider.model.descriptionCustom")
+                : t("settings.transform.provider.model.descriptionDefault")
+            }
+            descriptionMode="tooltip"
+            layout="stacked"
+            grouped={true}
+          >
+            <div className="flex items-center gap-2">
+              <ModelSelect
+                value={state.model}
+                options={state.modelOptions}
+                disabled={state.isModelUpdating}
+                isLoading={state.isFetchingModels}
+                placeholder={
+                  state.modelOptions.length > 0
+                    ? t(
+                        "settings.transform.provider.model.placeholderWithOptions",
+                      )
+                    : t(
+                        "settings.transform.provider.model.placeholderNoOptions",
+                      )
+                }
+                onSelect={state.handleModelSelect}
+                onCreate={state.handleModelCreate}
+                onBlur={() => {}}
+                className="flex-1 min-w-[380px]"
               />
-            </ResetButton>
-          </div>
-        </SettingContainer>
+              <ResetButton
+                onClick={state.handleRefreshModels}
+                disabled={state.isFetchingModels}
+                ariaLabel={t("settings.transform.provider.model.refreshModels")}
+                className="flex h-10 w-10 items-center justify-center"
+              >
+                <RefreshCcw
+                  className={`h-4 w-4 ${state.isFetchingModels ? "animate-spin" : ""}`}
+                />
+              </ResetButton>
+            </div>
+          </SettingContainer>
 
-        <SettingContainer
-          title={t("settings.transform.provider.reasoning.title")}
-          description={t(
-            "settings.transform.provider.reasoning.description",
-          )}
-          descriptionMode="tooltip"
-          layout="stacked"
-          grouped={true}
-        >
-          <div className="flex items-center gap-2">
-            <Select
-              value={state.reasoningEffort}
-              options={[
-                { value: "", label: t("settings.transform.provider.reasoning.auto") },
-                {
-                  value: "none",
-                  label: t("settings.transform.provider.reasoning.off"),
-                },
-                ...state.reasoningLevels.map((level) => ({
-                  value: level,
-                  // The model's own API level tokens need no translation.
-                  label: level,
-                })),
-              ]}
-              onChange={(value) =>
-                state.handleReasoningEffortChange(value ?? "")
-              }
-              isClearable={false}
-              placeholder={t(
-                "settings.transform.provider.reasoning.placeholder",
-              )}
-              className="w-[380px]"
-            />
-          </div>
-        </SettingContainer>
+          <SettingContainer
+            title={t("settings.transform.provider.reasoning.title")}
+            description={t("settings.transform.provider.reasoning.description")}
+            descriptionMode="tooltip"
+            layout="stacked"
+            grouped={true}
+          >
+            <div className="flex items-center gap-2">
+              <Select
+                value={state.reasoningEffort}
+                options={[
+                  {
+                    value: "",
+                    label: t("settings.transform.provider.reasoning.auto"),
+                  },
+                  {
+                    value: "none",
+                    label: t("settings.transform.provider.reasoning.off"),
+                  },
+                  ...state.reasoningLevels.map((level) => ({
+                    value: level,
+                    // The model's own API level tokens need no translation.
+                    label: level,
+                  })),
+                ]}
+                onChange={(value) =>
+                  state.handleReasoningEffortChange(value ?? "")
+                }
+                isClearable={false}
+                placeholder={t(
+                  "settings.transform.provider.reasoning.placeholder",
+                )}
+                className="w-[380px]"
+              />
+            </div>
+          </SettingContainer>
         </>
       )}
     </>

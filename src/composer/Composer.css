@@ -469,6 +469,84 @@
   font-size: 10px;
 }
 
+.composer__dual-btn {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(90, 160, 255, 0.4);
+  border-radius: 4px;
+  background: rgba(90, 160, 255, 0.15);
+  color: #60b5ff;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition:
+    background 120ms ease,
+    color 120ms ease;
+}
+
+.composer__dual-btn:hover {
+  background: rgba(90, 160, 255, 0.3);
+  color: #ffffff;
+}
+
+.composer__input-modes {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  width: fit-content;
+}
+
+.composer__input-mode-btn {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.65);
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    color 120ms ease;
+}
+
+.composer__input-mode-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f2f2f7;
+}
+
+.composer__input-mode-btn--active {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.composer__alert {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 69, 58, 0.4);
+  border-radius: 8px;
+  background: rgba(255, 69, 58, 0.12);
+  color: #ff453a;
+  font-size: 12px;
+  line-height: 16px;
+}
+
 .composer__instruction {
   flex: 0 0 auto;
   box-sizing: border-box;

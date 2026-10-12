@@ -4,8 +4,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 use specta::Type;
 use std::collections::HashMap;
 use std::fmt;
-use tauri::AppHandle;
-use tauri_plugin_store::StoreExt;
+use std::io;
+use std::path::Path;
+use std::sync::Mutex;
+use tauri::{AppHandle, Runtime};
+use tauri_plugin_store::{resolve_store_path, Store, StoreBuilder, StoreExt};
 
 pub const APPLE_INTELLIGENCE_PROVIDER_ID: &str = "apple_intelligence";
 pub const APPLE_INTELLIGENCE_DEFAULT_MODEL_ID: &str = "Apple Intelligence";
@@ -724,11 +727,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
 }
 
 fn default_post_process_api_keys() -> SecretMap {
-    let mut map = HashMap::new();
-    for provider in default_post_process_providers() {
-        map.insert(provider.id, String::new());
-    }
-    SecretMap(map)
+    SecretMap(HashMap::new())
 }
 
 fn default_model_for_provider(provider_id: &str) -> String {
@@ -818,13 +817,6 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
                 settings.post_process_providers.push(provider.clone());
                 changed = true;
             }
-        }
-
-        if !settings.post_process_api_keys.contains_key(&provider.id) {
-            settings
-                .post_process_api_keys
-                .insert(provider.id.clone(), String::new());
-            changed = true;
         }
 
         let default_model = default_model_for_provider(&provider.id);
@@ -1038,19 +1030,227 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
     settings
 }
 
-pub fn get_settings(app: &AppHandle) -> AppSettings {
-    let store = app
-        .store(crate::portable::store_path(SETTINGS_STORE_PATH))
-        .expect("Failed to initialize store");
+// Credential operations acquire their state lock before this lock, never vice versa.
+// The flag prevents recreating this cache after its exit-time resource closure.
+static SETTINGS_STATE: Mutex<bool> = Mutex::new(false);
 
-    // Settings reads also persist one-time migrations. Migration helpers are
-    // idempotent, so this converges after the first read of an older store.
+fn with_settings_store<T>(
+    app: &AppHandle,
+    operation: impl FnOnce(&Store<tauri::Wry>, &Path) -> Result<T, String>,
+) -> Result<T, String> {
+    let exiting = SETTINGS_STATE
+        .lock()
+        .map_err(|_| "Settings synchronization unavailable".to_string())?;
+    if *exiting {
+        return Err("Settings store is shutting down".to_string());
+    }
+    let requested_path = crate::portable::store_path(SETTINGS_STORE_PATH);
+    let path = resolve_store_path(app, &requested_path)
+        .map_err(|_| "Settings path unavailable".to_string())?;
+    let store = StoreBuilder::new(app, &requested_path)
+        .disable_auto_save()
+        .build()
+        .map_err(|_| "Settings store unavailable".to_string())?;
+    // StoreBuilder discards load errors. An existing unreadable/malformed source
+    // must not look like an empty fresh store and be overwritten with defaults.
+    match std::fs::metadata(&path) {
+        Ok(_) => store
+            .reload_ignore_defaults()
+            .map_err(|_| "Unable to read persisted settings".to_string())?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err("Unable to access persisted settings".to_string()),
+    }
+    operation(&store, &path)
+}
+
+/// Closes the settings cache before the store plugin's Exit hook runs, so its
+/// truncating SDK saver can never overwrite the atomically written file.
+pub(crate) fn settings_durability_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::<R, ()>::new("settings-durability")
+        .on_event(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                close_settings_store(app);
+            }
+        })
+        .build()
+}
+
+pub(crate) fn close_settings_store<R: Runtime>(app: &AppHandle<R>) {
+    let mut exiting = SETTINGS_STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *exiting = true;
+    close_settings_store_resource(app, crate::portable::store_path(SETTINGS_STORE_PATH));
+}
+
+fn close_settings_store_resource<R: Runtime>(app: &AppHandle<R>, path: impl AsRef<Path>) {
+    if let Some(store) = app.get_store(path) {
+        // The plugin's Exit hook otherwise calls its truncating SDK saver.
+        store.close_resource();
+    }
+}
+
+fn save_store_atomically<R: Runtime>(store: &Store<R>, path: &Path) -> Result<(), String> {
+    save_store_atomically_with(store, path, |file, entries| {
+        serde_json::to_writer_pretty(file, entries).map_err(io::Error::other)
+    })
+}
+
+fn save_store_atomically_with<R: Runtime>(
+    store: &Store<R>,
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File, &HashMap<String, serde_json::Value>) -> io::Result<()>,
+) -> Result<(), String> {
+    let persist = || -> io::Result<()> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("Invalid settings path"))?;
+        std::fs::create_dir_all(parent)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        let entries = store.entries().into_iter().collect();
+        write(temporary.as_file_mut(), &entries)?;
+        temporary.as_file().sync_all()?;
+        temporary.persist(path).map_err(|error| error.error)?;
+        Ok(())
+    };
+    persist().map_err(|_| "Unable to durably save settings".to_string())
+}
+
+fn persist_settings_value_with<R: Runtime>(
+    store: &Store<R>,
+    value: serde_json::Value,
+    save: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let previous = store.get("settings");
+    store.set("settings", value);
+    if let Err(error) = save() {
+        match previous {
+            Some(previous) => store.set("settings", previous),
+            None => {
+                store.delete("settings");
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn write_settings_snapshot<R: Runtime>(
+    store: &Store<R>,
+    path: &Path,
+    settings: AppSettings,
+) -> Result<(), String> {
+    let mut value =
+        serde_json::to_value(settings).map_err(|_| "Unable to serialize settings".to_string())?;
+    let map = value
+        .as_object_mut()
+        .ok_or_else(|| "Invalid settings snapshot".to_string())?;
+    match store.get("settings") {
+        Some(current) => {
+            if !current.is_object() {
+                return Err("Invalid persisted settings object".to_string());
+            }
+            match current.get("post_process_api_keys") {
+                Some(secrets) => {
+                    map.insert("post_process_api_keys".into(), secrets.clone());
+                }
+                None => {
+                    map.remove("post_process_api_keys");
+                }
+            }
+        }
+        None => {
+            map.insert("post_process_api_keys".into(), serde_json::json!({}));
+        }
+    }
+    persist_settings_value_with(store, value, || save_store_atomically(store, path))
+}
+
+fn settings_secret_map_from_store<R: Runtime>(store: &Store<R>) -> Result<SecretMap, String> {
+    let Some(settings) = store.get("settings") else {
+        return Ok(default_post_process_api_keys());
+    };
+    if !settings.is_object() {
+        return Err("Invalid persisted settings object".to_string());
+    }
+    match settings.get("post_process_api_keys") {
+        Some(secrets) => serde_json::from_value(secrets.clone())
+            .map_err(|_| "Unable to read persisted credentials".to_string()),
+        None => Ok(default_post_process_api_keys()),
+    }
+}
+
+pub(crate) fn read_settings_secret_map(app: &AppHandle) -> Result<SecretMap, String> {
+    with_settings_store(app, |store, _| settings_secret_map_from_store(store))
+}
+
+fn mutate_settings_secret_with<R: Runtime>(
+    store: &Store<R>,
+    provider_id: &str,
+    key: Option<&str>,
+    save: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let mut value = store
+        .get("settings")
+        .unwrap_or_else(|| serde_json::json!({}));
+    let settings = value
+        .as_object_mut()
+        .ok_or_else(|| "Invalid persisted settings object".to_string())?;
+    let secrets = settings
+        .entry("post_process_api_keys")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| "Invalid persisted credential map".to_string())?;
+    match key {
+        Some(key) => {
+            secrets.insert(
+                provider_id.to_string(),
+                serde_json::Value::String(key.to_string()),
+            );
+        }
+        None => {
+            secrets.remove(provider_id);
+        }
+    }
+    persist_settings_value_with(store, value, save)
+}
+
+pub(crate) fn mutate_settings_secret(
+    app: &AppHandle,
+    provider_id: &str,
+    key: Option<&str>,
+) -> Result<(), String> {
+    with_settings_store(app, |store, path| {
+        mutate_settings_secret_with(store, provider_id, key, || {
+            save_store_atomically(store, path)
+        })
+    })
+}
+
+pub fn get_settings(app: &AppHandle) -> AppSettings {
+    match with_settings_store(app, |store, path| {
+        let (settings, updated) = load_settings_from_store(store);
+        if updated && write_settings_snapshot(store, path, settings.clone()).is_err() {
+            warn!("Unable to durably update settings defaults/schema; previous cache retained");
+        }
+        Ok(settings)
+    }) {
+        Ok(settings) => settings,
+        Err(_) => {
+            warn!("Unable to load persisted settings; using safe defaults");
+            get_default_settings()
+        }
+    }
+}
+
+fn load_settings_from_store<R: Runtime>(store: &Store<R>) -> (AppSettings, bool) {
+    let mut changed = false;
     let mut settings = if let Some(settings_value) = store.get("settings") {
         let (mut settings, mut updated) =
             match serde_json::from_value::<AppSettings>(settings_value.clone()) {
                 Ok(settings) => (settings, false),
-                Err(e) => {
-                    warn!("Failed to parse stored settings ({e}); salvaging valid fields");
+                Err(_) => {
+                    warn!("Failed to parse stored settings; salvaging valid fields");
                     (salvage_settings(&settings_value), true)
                 }
             };
@@ -1068,22 +1268,16 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
             }
         }
 
-        if updated {
-            store.set("settings", serde_json::to_value(&settings).unwrap());
-        }
+        changed |= updated;
 
         settings
     } else {
-        let default_settings = get_default_settings();
-        store.set("settings", serde_json::to_value(&default_settings).unwrap());
-        default_settings
+        changed = true;
+        get_default_settings()
     };
 
-    if ensure_post_process_defaults(&mut settings) {
-        store.set("settings", serde_json::to_value(&settings).unwrap());
-    }
-
-    settings
+    changed |= ensure_post_process_defaults(&mut settings);
+    (settings, changed)
 }
 
 /// Rebuilds settings from a store value that failed to deserialize as a whole.
@@ -1202,11 +1396,13 @@ fn apply_settings_migrations(
 }
 
 pub fn write_settings(app: &AppHandle, settings: AppSettings) {
-    let store = app
-        .store(crate::portable::store_path(SETTINGS_STORE_PATH))
-        .expect("Failed to initialize store");
-
-    store.set("settings", serde_json::to_value(&settings).unwrap());
+    if with_settings_store(app, |store, path| {
+        write_settings_snapshot(store, path, settings)
+    })
+    .is_err()
+    {
+        warn!("Unable to durably save settings; previous settings retained");
+    }
 }
 
 pub fn get_bindings(app: &AppHandle) -> HashMap<String, ShortcutBinding> {
@@ -1686,5 +1882,254 @@ mod tests {
         let out = format!("{:?}", map);
         assert!(!out.contains("secret"));
         assert!(out.contains("[REDACTED]"));
+    }
+
+    fn persistence_fixture() -> (
+        tauri::App<tauri::test::MockRuntime>,
+        tempfile::TempDir,
+        std::sync::Arc<Store<tauri::test::MockRuntime>>,
+        std::path::PathBuf,
+    ) {
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_store::Builder::default().build())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(SETTINGS_STORE_PATH);
+        let store = StoreBuilder::new(&app, &path)
+            .disable_auto_save()
+            .build()
+            .unwrap();
+        store.set("unrelated-root", serde_json::json!({"keep": true}));
+        let mut settings = get_default_settings();
+        settings
+            .post_process_api_keys
+            .insert("openai".into(), "test-only-legacy".into());
+        settings
+            .post_process_api_keys
+            .insert("anthropic".into(), "test-only-retained".into());
+        persist_settings_value_with(&store, serde_json::to_value(settings).unwrap(), || {
+            save_store_atomically(&store, &path)
+        })
+        .unwrap();
+        (app, directory, store, path)
+    }
+
+    #[test]
+    fn partial_temporary_write_failure_retains_disk_and_restores_plugin_cache() {
+        use std::io::Write;
+
+        let (_app, directory, store, path) = persistence_fixture();
+        let original_disk = std::fs::read(&path).unwrap();
+        let original_cache = store.get("settings").unwrap();
+        let result = mutate_settings_secret_with(&store, "openai", None, || {
+            save_store_atomically_with(&store, &path, |file, _| {
+                file.write_all(b"{\"settings\":")?;
+                Err(std::io::Error::other("test-only partial write failure"))
+            })
+        });
+
+        assert!(result.is_err());
+        assert_eq!(store.get("settings"), Some(original_cache));
+        assert_eq!(std::fs::read(&path).unwrap(), original_disk);
+        assert_eq!(
+            store.get("unrelated-root"),
+            Some(serde_json::json!({"keep": true}))
+        );
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        store.reload_ignore_defaults().unwrap();
+        assert_eq!(
+            settings_secret_map_from_store(&store)
+                .unwrap()
+                .get("openai"),
+            Some(&"test-only-legacy".to_string())
+        );
+    }
+
+    #[test]
+    fn stale_snapshot_cannot_resurrect_removed_or_replace_latest_credentials() {
+        let (_app, _directory, store, path) = persistence_fixture();
+        let mut stale: AppSettings =
+            serde_json::from_value(store.get("settings").unwrap()).unwrap();
+        mutate_settings_secret_with(&store, "openai", None, || {
+            save_store_atomically(&store, &path)
+        })
+        .unwrap();
+        mutate_settings_secret_with(&store, "anthropic", Some("test-only-new"), || {
+            save_store_atomically(&store, &path)
+        })
+        .unwrap();
+        stale.audio_feedback = true;
+        write_settings_snapshot(&store, &path, stale).unwrap();
+
+        let disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(disk["settings"]["audio_feedback"], true);
+        assert!(disk["settings"]["post_process_api_keys"]
+            .get("openai")
+            .is_none());
+        assert_eq!(
+            disk["settings"]["post_process_api_keys"]["anthropic"],
+            "test-only-new"
+        );
+        assert_eq!(disk["unrelated-root"], serde_json::json!({"keep": true}));
+
+        let mut sanitized: AppSettings =
+            serde_json::from_value(store.get("settings").unwrap()).unwrap();
+        sanitized.post_process_api_keys.clear();
+        write_settings_snapshot(&store, &path, sanitized).unwrap();
+        store.reload_ignore_defaults().unwrap();
+        assert_eq!(
+            settings_secret_map_from_store(&store)
+                .unwrap()
+                .get("anthropic"),
+            Some(&"test-only-new".to_string())
+        );
+    }
+
+    #[test]
+    fn schema_snapshot_preserves_latest_raw_secret_map_without_synthesizing_keys() {
+        let (_app, _directory, store, path) = persistence_fixture();
+        let raw_secrets = serde_json::json!({
+            "openai": "test-only-legacy",
+            "future-provider": {"unknown-format": true}
+        });
+        let mut raw = store.get("settings").unwrap();
+        raw["post_process_api_keys"] = raw_secrets.clone();
+        persist_settings_value_with(&store, raw, || save_store_atomically(&store, &path)).unwrap();
+        let mut salvaged = salvage_settings(&store.get("settings").unwrap());
+        ensure_post_process_defaults(&mut salvaged);
+        write_settings_snapshot(&store, &path, salvaged).unwrap();
+        assert_eq!(
+            store.get("settings").unwrap()["post_process_api_keys"],
+            raw_secrets
+        );
+        assert!(settings_secret_map_from_store(&store).is_err());
+
+        let mut defaults = get_default_settings();
+        defaults.post_process_api_keys.clear();
+        ensure_post_process_defaults(&mut defaults);
+        assert!(defaults.post_process_api_keys.is_empty());
+        assert_eq!(
+            serde_json::to_value(defaults).unwrap()["post_process_api_keys"],
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn real_source_cleanup_failure_reports_incomplete_and_retains_all_sources() {
+        use crate::secret::{ApiKeyStore, MemoryApiKeyStore, MigrationOutcome, SecretError};
+        use std::io::Write;
+
+        struct Source<'a> {
+            store: &'a Store<tauri::test::MockRuntime>,
+            path: &'a std::path::Path,
+        }
+        impl ApiKeyStore for Source<'_> {
+            fn get(&self, id: &str) -> Result<Option<String>, SecretError> {
+                settings_secret_map_from_store(self.store)
+                    .map(|map| map.get(id).cloned())
+                    .map_err(SecretError::Store)
+            }
+            fn set(&self, id: &str, key: &str) -> Result<(), SecretError> {
+                mutate_settings_secret_with(self.store, id, Some(key), || {
+                    save_store_atomically(self.store, self.path)
+                })
+                .map_err(SecretError::Store)
+            }
+            fn delete(&self, id: &str) -> Result<(), SecretError> {
+                mutate_settings_secret_with(self.store, id, None, || {
+                    save_store_atomically_with(self.store, self.path, |file, _| {
+                        file.write_all(b"{")?;
+                        Err(std::io::Error::other("test-only save failure"))
+                    })
+                })
+                .map_err(SecretError::Store)
+            }
+        }
+
+        let (_app, _directory, store, path) = persistence_fixture();
+        let original_disk = std::fs::read(&path).unwrap();
+        let source = Source {
+            store: &store,
+            path: &path,
+        };
+        let native = MemoryApiKeyStore::new(HashMap::new());
+        let report = crate::secret::migrate_secret_map(&source, &native, &["openai".into()]);
+        assert_eq!(report.migrated, 0);
+        assert_eq!(report.outcomes["openai"], MigrationOutcome::Incomplete);
+        assert_eq!(
+            source.get("openai").unwrap(),
+            Some("test-only-legacy".into())
+        );
+        assert_eq!(
+            source.get("anthropic").unwrap(),
+            Some("test-only-retained".into())
+        );
+        assert_eq!(
+            native.get("openai").unwrap(),
+            Some("test-only-legacy".into())
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original_disk);
+    }
+
+    #[test]
+    fn sdk_exit_saves_other_stores_but_cannot_overwrite_closed_settings_resource() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(SETTINGS_STORE_PATH);
+        let exit_path = path.clone();
+        let app = tauri::test::mock_builder()
+            // Mirrors the production pre-store lifecycle hook: the same
+            // resource-closing helper runs on RunEvent::Exit.
+            .plugin(
+                tauri::plugin::Builder::<tauri::test::MockRuntime, ()>::new("settings-durability")
+                    .on_event(move |app, event| {
+                        if matches!(event, tauri::RunEvent::Exit) {
+                            close_settings_store_resource(app, &exit_path);
+                        }
+                    })
+                    .build(),
+            )
+            .plugin(tauri_plugin_store::Builder::default().build())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = StoreBuilder::new(&app, &path)
+            .disable_auto_save()
+            .build()
+            .unwrap();
+        store.set(
+            "settings",
+            serde_json::json!({
+                "post_process_api_keys": {"openai": "test-only-durable"}
+            }),
+        );
+        save_store_atomically(&store, &path).unwrap();
+        let original_disk = std::fs::read(&path).unwrap();
+        let other_path = directory.path().join("other-store.json");
+        let other = StoreBuilder::new(&app, &other_path)
+            .disable_auto_save()
+            .build()
+            .unwrap();
+        other.set("keep", true);
+        let missing = directory.path().join("not-loaded.json");
+        close_settings_store_resource(app.handle(), &missing);
+        assert!(app.get_store(&missing).is_none());
+        assert!(!missing.exists());
+
+        // If the SDK Exit hook still sees this cache, it overwrites durable data.
+        store.set("settings", serde_json::json!({"uncommitted": true}));
+        let window =
+            tauri::WebviewWindowBuilder::new(&app, "exit-test", tauri::WebviewUrl::default())
+                .build()
+                .unwrap();
+        app.run(move |_app, event| {
+            if matches!(event, tauri::RunEvent::Ready) {
+                let _ = window.close();
+            }
+        });
+        assert_eq!(std::fs::read(&path).unwrap(), original_disk);
+        let other_disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&other_path).unwrap()).unwrap();
+        assert_eq!(other_disk, serde_json::json!({"keep": true}));
     }
 }

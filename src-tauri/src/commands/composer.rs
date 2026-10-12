@@ -353,6 +353,18 @@ pub fn deliver_voice_input_to_focused_composer(app: &AppHandle, text: &str) -> b
 pub fn open_composer(app_handle: AppHandle) {
     // Everything touches native windows / AppKit, so run on the main thread.
     let _ = app_handle.clone().run_on_main_thread(move || {
+        // If composer already exists and is visible, just focus it
+        if let Some(window) = app_handle.get_webview_window(COMPOSER_WINDOW_LABEL) {
+            if window.is_visible().unwrap_or(false) {
+                // Already visible: just refocus, do NOT emit composer-open (that would reset state)
+                let _ = window.show();
+                let _ = window.set_focus();
+                #[cfg(target_os = "macos")]
+                platform::ensure_key_window(&window);
+                return;
+            }
+        }
+
         // Capture BEFORE the composer steals focus.
         if let Some(focus) = platform::capture_focus(&app_handle) {
             remember_focus(Some(focus));

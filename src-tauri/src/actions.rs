@@ -118,7 +118,11 @@ fn should_use_streaming_overlay(style: OverlayStyle, is_streaming: bool) -> bool
     style == OverlayStyle::Live && is_streaming
 }
 
-async fn post_process_transcription(settings: &AppSettings, transcription: &str) -> Option<String> {
+async fn post_process_transcription(
+    app_handle: &AppHandle,
+    settings: &AppSettings,
+    transcription: &str,
+) -> Option<String> {
     if is_blank_transcription(transcription) {
         debug!("Post-processing skipped because the transcription is empty");
         return None;
@@ -179,11 +183,17 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
         provider.id, model
     );
 
-    let api_key = settings
-        .post_process_api_keys
-        .get(&provider.id)
-        .cloned()
-        .unwrap_or_default();
+    let api_key = match crate::secret::get_api_key(app_handle, &provider.id) {
+        Ok(key) => key.unwrap_or_default(),
+        Err(_) => {
+            warn!("Post-processing stopped because the provider credential is unavailable");
+            let _ = app_handle.emit(
+                "transcription-error",
+                "Provider credential unavailable. Re-enter or remove the API key in settings.",
+            );
+            return None;
+        }
+    };
 
     // Reasoning/thinking level for this provider (from settings, defaulting to
     // `none` for custom/openrouter). llm_client picks the field the endpoint
@@ -440,7 +450,8 @@ pub(crate) async fn process_transcription_output(
     }
 
     if post_process {
-        if let Some(processed_text) = post_process_transcription(&settings, &final_text).await {
+        if let Some(processed_text) = post_process_transcription(app, &settings, &final_text).await
+        {
             post_processed_text = Some(processed_text.clone());
             final_text = processed_text;
 
