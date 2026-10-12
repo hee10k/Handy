@@ -2,6 +2,7 @@ import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 import { locale } from "@tauri-apps/plugin-os";
 import { LANGUAGE_METADATA } from "./languages";
+import { resources } from "./resources";
 import { commands } from "@/bindings";
 import {
   getLanguageDirection,
@@ -9,26 +10,8 @@ import {
   updateDocumentLanguage,
 } from "@/lib/utils/rtl";
 
-// Auto-discover translation files using Vite's glob import
-const localeModules = import.meta.glob<{ default: Record<string, unknown> }>(
-  "./locales/*/translation.json",
-  { eager: true },
-);
-
-// Tajagi ships ko + en only (soft-fork policy, per product decision). All other
-// bundled locales are unreachable: the language dropdown offers ko/en and any
-// non-ko/en system locale falls back to English. Keeping the upstream locale
-// files on disk is harmless — they are filtered out here.
-const APP_LANGUAGE_ALLOWLIST = ["en", "ko"];
-
-// Build resources from discovered locale files
-const resources: Record<string, { translation: Record<string, unknown> }> = {};
-for (const [path, module] of Object.entries(localeModules)) {
-  const langCode = path.match(/\.\/locales\/(.+)\/translation\.json/)?.[1];
-  if (langCode && APP_LANGUAGE_ALLOWLIST.includes(langCode)) {
-    resources[langCode] = { translation: module.default };
-  }
-}
+// Locale bundles come from the shared module so the composer entry (its own
+// i18next instance) can never drift from the settings window's language set.
 
 // Build supported languages list from the (already ko/en-filtered) resources
 export const SUPPORTED_LANGUAGES = Object.keys(resources)

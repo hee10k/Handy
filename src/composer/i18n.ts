@@ -2,6 +2,7 @@ import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { locale } from "@tauri-apps/plugin-os";
+import { resources as sharedResources } from "@/i18n/resources";
 import {
   getLanguageDirection,
   updateDocumentDirection,
@@ -12,18 +13,10 @@ import {
 // its own i18next instance. It shares the exact same locale files as the main
 // app (below) and mirrors src/i18n/index.ts' setup, but talks to the backend
 // through raw `invoke` to stay decoupled from the generated `src/bindings.ts`.
-const localeModules = import.meta.glob<{ default: Record<string, unknown> }>(
-  "../i18n/locales/*/translation.json",
-  { eager: true },
-);
-
-const resources: Record<string, { translation: Record<string, unknown> }> = {};
-for (const [path, module] of Object.entries(localeModules)) {
-  const langCode = path.match(/\.\/\.\.\/i18n\/locales\/(.+)\/translation\.json/)?.[1];
-  if (langCode) {
-    resources[langCode] = { translation: module.default };
-  }
-}
+// Shared with the settings window: same locale files, same ko/en allowlist.
+// (The hand-rolled glob here previously matched no keys, so this window
+// rendered raw i18n keys instead of translations.)
+const resources = sharedResources;
 
 const SUPPORTED_LANGUAGES = Object.keys(resources);
 
@@ -59,11 +52,15 @@ const getSupportedLanguage = (
   return supported ?? null;
 };
 
-// English default; unsupported/untouched locales fall back to en.
+// English default; unsupported/untouched locales fall back to en. Resources are
+// bundled eagerly, so initialize synchronously: with a deferred init the first
+// render resolves `t()` to raw keys whenever the sync below finds no language
+// change to trigger a re-render (e.g. an English locale).
 i18n.use(initReactI18next).init({
   resources,
   lng: "en",
   fallbackLng: "en",
+  initAsync: false,
   interpolation: {
     escapeValue: false, // React already escapes values
   },
@@ -76,12 +73,13 @@ i18n.use(initReactI18next).init({
 // the OS locale when no saved preference exists — same behaviour as the main app.
 const syncLanguageFromSettings = async () => {
   try {
-    const result = await invoke<{
-      status: string;
-      data?: { app_language?: string | null };
-    }>("get_app_settings");
-    if (result.status === "ok" && result.data?.app_language) {
-      const supported = getSupportedLanguage(result.data.app_language);
+    // Raw invoke resolves to the command's Ok value, so this is the settings
+    // object itself (not a `{status, data}` result envelope).
+    const settings = await invoke<{ app_language?: string | null }>(
+      "get_app_settings",
+    );
+    if (settings?.app_language) {
+      const supported = getSupportedLanguage(settings.app_language);
       if (supported && supported !== i18n.language) {
         await i18n.changeLanguage(supported);
       }

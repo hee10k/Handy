@@ -178,12 +178,20 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     // Apply accelerator preferences before any model loads
     managers::transcription::apply_accelerator_settings(app_handle);
 
+    let auto_input_manager = Arc::new(
+        managers::auto_input::AutoInputManager::new(app_handle)
+            .expect("Failed to initialize auto input manager"),
+    );
+
     // Add managers to Tauri's managed state
     app_handle.manage(recording_manager.clone());
     app_handle.manage(model_manager.clone());
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
+    app_handle.manage(auto_input_manager.clone());
     app_handle.manage(text_predict::PredictorState::new());
+
+    auto_input_manager.init_on_startup();
 
     // Build the local continuation index before the composer opens. It uses the
     // bundled dictionaries only; a failed warm-up is retried by the command.
@@ -778,6 +786,14 @@ pub fn run(cli_args: CliArgs) {
             commands::history::update_history_limit,
             commands::history::update_recording_retention_period,
             helpers::clamshell::is_laptop,
+            commands::auto_input::get_auto_input_models,
+            commands::auto_input::get_auto_input_state,
+            commands::auto_input::download_auto_input_model,
+            commands::auto_input::cancel_auto_input_model_download,
+            commands::auto_input::delete_auto_input_model,
+            commands::auto_input::set_auto_input_model,
+            commands::auto_input::set_auto_input_enabled,
+            commands::auto_input::resolve_auto_input,
         ])
         .events(collect_events![
             managers::history::HistoryUpdatePayload,
@@ -786,6 +802,9 @@ pub fn run(cli_args: CliArgs) {
             transform::TransformDelta,
             transform::TransformErrorEvent,
             transform::TransformDone,
+            managers::auto_input::AutoInputModelProgressPayload,
+            managers::auto_input::AutoInputModelStatePayload,
+            managers::auto_input::AutoInputModelsChangedPayload,
         ]);
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds
@@ -1068,10 +1087,13 @@ pub fn run(cli_args: CliArgs) {
             tauri::RunEvent::Reopen { .. } => {
                 show_main_window(app);
             }
-            // Teardown transcribe.cpp before exit
+            // Teardown transcribe.cpp and auto-input runtime before exit
             tauri::RunEvent::Exit => {
                 if let Some(tm) = app.try_state::<Arc<TranscriptionManager>>() {
                     let _ = tm.unload_model();
+                }
+                if let Some(aim) = app.try_state::<Arc<managers::auto_input::AutoInputManager>>() {
+                    aim.unload_sync();
                 }
             }
             _ => {}

@@ -224,6 +224,33 @@ async changeExperimentalEnabledSetting(enabled: boolean) : Promise<Result<null, 
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Enable/disable voice (speech) input. Defaults to OFF so onboarding is
+ * composer-first; turning it on simply re-exposes the existing audio pipeline
+ * (no registry/unregister of a global hotkey — voice is not a shortcut).
+ */
+async changeVoiceInputEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_voice_input_enabled_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Mark onboarding as completed without selecting a speech model. The
+ * composer-first path (voice input OFF) skips the model-download step, so the
+ * frontend calls this once first-run permissions are settled to avoid
+ * re-running onboarding on every launch.
+ */
+async markOnboardingComplete() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("mark_onboarding_complete") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changePostProcessBaseUrlSetting(providerId: string, baseUrl: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_post_process_base_url_setting", { providerId, baseUrl }) };
@@ -832,6 +859,246 @@ async unloadModelManually() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async commitComposer(text: string, original: string | null, mode: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("commit_composer", { text, original, mode }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Cancel the composer: close the window and return focus to the pre-hotkey
+ * window. No paste and no clipboard change.
+ */
+async cancelComposer() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancel_composer") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Correct obvious typos in `text`, returning the corrected sentence (or `None`
+ * when it is already clean). Purely local — the bundled wordfreq dictionaries.
+ */
+async correctText(text: string) : Promise<Result<string | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("correct_text", { text }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * panel — pure dictionary/BM25, instant and offline. Model continuations are
+ * a separate, explicit command (`transform::suggest_llm_continuations`).
+ */
+async getContinuationSuggestions(text: string) : Promise<Result<ContinuationSuggestion[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_continuation_suggestions", { text }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Classify the foreground app (browser/editor/mail/other) so the composer can
+ * bias its quick actions toward the current context (ticket 09). AppKit calls
+ * run on the main thread; non-macOS and unreadable cases return "other".
+ */
+async getForegroundAppCategory() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_foreground_app_category") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Explicit model-generated continuations for the composer. The caller invokes
+ * this on demand; each returned line is appended to the existing draft.
+ */
+async suggestLlmContinuations(text: string, count: number) : Promise<Result<string[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("suggest_llm_continuations", { text, count }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Static metadata for the four transform modes, so the frontend can build the
+ * mode selector without hardcoding strings.
+ */
+async listTransformModes() : Promise<TransformModeInfo[]> {
+    return await TAURI_INVOKE("list_transform_modes");
+},
+/**
+ * Transform `text` with the given mode, streaming result deltas back through
+ * the `transform-delta` event. `instruction` is used by the Custom mode.
+ */
+async runTransform(mode: string, text: string, instruction: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("run_transform", { mode, text, instruction }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Cancel an in-flight transform. The streaming loop observes the generation
+ * bump on its next delta and stops emitting without sending a partial done.
+ */
+async cancelTransform() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancel_transform") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The currently active transform provider (same selection as post_process).
+ */
+async getTransformProvider() : Promise<Result<PostProcessProvider | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_transform_provider") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Select the active transform provider by id.
+ */
+async setTransformProvider(providerId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_transform_provider", { providerId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The configured model for a given provider.
+ */
+async getTransformModel(providerId: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_transform_model", { providerId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Persist the configured model for a given provider.
+ */
+async setTransformModel(providerId: string, model: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_transform_model", { providerId, model }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The reasoning/thinking level for a provider's transform requests, or
+ * `None` when unset (the provider default applies). Values are
+ * `none`|`low`|`medium`|`high`|`xhigh`|`max`; `none` disables thinking.
+ */
+async getTransformReasoningEffort(providerId: string) : Promise<Result<string | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_transform_reasoning_effort", { providerId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Persist the reasoning/thinking level for a provider's transform requests.
+ * `None` clears the override (falls back to the provider default), and an
+ * unknown value is rejected.
+ */
+async setTransformReasoningEffort(providerId: string, effort: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_transform_reasoning_effort", { providerId, effort }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The composer quick-action slots (ticket 09): sorted (slot, mode_id) pairs
+ * for every assigned slot; slots 5-10 are simply absent until configured.
+ */
+async getQuickActionSlots() : Promise<Result<([number, string])[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_quick_action_slots") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Assign a transform mode to one of the 10 quick-action slots
+ * (Cmd/Ctrl+1..0). `None` clears the slot. Slot index is 1-based, 1..=10.
+ */
+async setQuickActionSlot(slot: number, mode: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_quick_action_slot", { slot, mode }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch the list of available model ids from the provider, reusing the
+ * existing OpenAI-compatible model listing path.
+ */
+async fetchTransformModels(providerId: string) : Promise<Result<string[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("fetch_transform_models", { providerId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Read the stored API key for a provider through the secret store.
+ */
+async getTransformApiKey(providerId: string) : Promise<Result<string | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_transform_api_key", { providerId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Store an API key for a provider through the secret store.
+ */
+async setTransformApiKey(providerId: string, key: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_transform_api_key", { providerId, key }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete the stored API key for a provider (clearing any plaintext settings
+ * copy so a previously-migrated key cannot linger).
+ */
+async deleteTransformApiKey(providerId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_transform_api_key", { providerId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getHistoryEntries(cursor: number | null, limit: number | null) : Promise<Result<PaginatedHistory, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_history_entries", { cursor, limit }) };
@@ -901,6 +1168,70 @@ async isLaptop() : Promise<Result<boolean, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async getAutoInputModels() : Promise<Result<AutoInputModelInfo[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_auto_input_models") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getAutoInputState() : Promise<Result<AutoInputState, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_auto_input_state") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async downloadAutoInputModel(modelId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("download_auto_input_model", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async cancelAutoInputModelDownload(modelId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancel_auto_input_model_download", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async deleteAutoInputModel(modelId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_auto_input_model", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setAutoInputModel(modelId: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_auto_input_model", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setAutoInputEnabled(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_auto_input_enabled", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async resolveAutoInput(context: string, spans: AutoInputSpan[]) : Promise<Result<AutoInputDecision[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resolve_auto_input", { context, spans }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -908,13 +1239,25 @@ async isLaptop() : Promise<Result<boolean, string>> {
 
 
 export const events = __makeEvents__<{
+autoInputModelProgressPayload: AutoInputModelProgressPayload,
+autoInputModelStatePayload: AutoInputModelStatePayload,
+autoInputModelsChangedPayload: AutoInputModelsChangedPayload,
 historyUpdatePayload: HistoryUpdatePayload,
 streamPhaseEvent: StreamPhaseEvent,
-streamTextEvent: StreamTextEvent
+streamTextEvent: StreamTextEvent,
+transformDelta: TransformDelta,
+transformDone: TransformDone,
+transformErrorEvent: TransformErrorEvent
 }>({
+autoInputModelProgressPayload: "auto-input-model-progress-payload",
+autoInputModelStatePayload: "auto-input-model-state-payload",
+autoInputModelsChangedPayload: "auto-input-models-changed-payload",
 historyUpdatePayload: "history-update-payload",
 streamPhaseEvent: "stream-phase-event",
-streamTextEvent: "stream-text-event"
+streamTextEvent: "stream-text-event",
+transformDelta: "transform-delta",
+transformDone: "transform-done",
+transformErrorEvent: "transform-error-event"
 })
 
 /** user-defined constants **/
@@ -950,38 +1293,70 @@ bindings?: Partial<{ [key in string]: ShortcutBinding }>; push_to_talk?: boolean
  */
 whats_new_last_seen_version?: string; selected_model?: string; onboarding_completed?: boolean; 
 /**
- * Whether voice (speech) input is enabled as an input source. Defaults to OFF
- * so first-run/onboarding is composer-first (ADR 3).
+ * Whether voice (speech) input is enabled as an input source. Defaults to
+ * OFF so first-run/onboarding is composer-first: no speech-model download
+ * and no microphone-permission prompt until the user opts in (ADR 3).
  */
 voice_input_enabled?: boolean; always_on_microphone?: boolean; selected_microphone?: string | null; 
 /**
  * Which input channel to use on the selected microphone device.
  * None means "average all channels" (original behavior).
  */
-selected_channel?: number | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; theme?: Theme; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; paste_delay_after_ms?: number; 
+selected_channel?: number | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; 
+/**
+ * Per-provider reasoning/thinking level the transform & dictate requests
+ * ask the model for. Keys are provider ids; values are one of
+ * `none` | `low` | `medium` | `high` | `xhigh` | `max`. Absent entries
+ * fall back to the legacy default (`none` for `custom`/`openrouter`,
+ * otherwise unset/auto). See `reasoning_effort_for`.
+ */
+post_process_reasoning_effort?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; 
+/**
+ * Composer quick-action slots (ticket 09): slot index 1..=10 -> transform
+ * mode id. Slots 1-4 default to the primary modes; 5-10 are absent (empty)
+ * until the user assigns them in settings. Rendered as the composer's
+ * quick buttons and bound to Cmd/Ctrl+1..0.
+ */
+quick_action_slots?: Partial<{ [key in number]: string }>; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; theme?: Theme; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; paste_delay_after_ms?: number; 
 /**
  * Debug-gated ("beta") receipt-sequenced paste: restore the clipboard only
  * after the target app actually reads the transcript, instead of after a
  * fixed delay. See `paste_tx`. macOS and Windows only.
  */
-reliable_paste?: boolean; typing_tool?: TypingTool; external_script_path?: string | null; filler_word_removal_enabled?: boolean; custom_filler_words?: string[] | null; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting;
+reliable_paste?: boolean; typing_tool?: TypingTool; external_script_path?: string | null; filler_word_removal_enabled?: boolean; custom_filler_words?: string[] | null; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; 
 /**
  * Stable transcribe.cpp device selector. This is derived from the backend's
  * `device_id` when available (or its name for backends such as Metal),
  * never from the process-local device registry index.
  */
-transcribe_gpu_device?: string | null; extra_recording_buffer_ms?: number; vad_enabled?: boolean;
+transcribe_gpu_device?: string | null; extra_recording_buffer_ms?: number; vad_enabled?: boolean; 
 /**
  * Which recording overlay to show: None / Minimal / Live. Streaming mode is
  * not gated on this — that follows model capability. Migrated from the old
  * `overlay_position` (position `none` → style `None`).
  */
-overlay_style?: OverlayStyle }
+overlay_style?: OverlayStyle; auto_input_enabled?: boolean; auto_input_model?: string | null }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
+export type AutoInputDecision = { id: number; language: AutoLanguage }
+/**
+ * DTO for frontend contract (matches tajagi-auto-input-plan.md).
+ */
+export type AutoInputModelInfo = { id: string; name: string; description: string; size_bytes: number; downloaded: boolean; downloading: boolean; downloaded_bytes: number; loaded: boolean; error: string | null }
+export type AutoInputModelProgressPayload = { model_id: string; phase: string; downloaded: number; total: number }
+export type AutoInputModelStatePayload = { enabled: boolean; selected_model: string | null; loading: boolean; loaded_model: string | null; error: string | null }
+export type AutoInputModelsChangedPayload = Record<string, never>
+export type AutoInputSpan = { id: number; ko: string; en: string }
+export type AutoInputState = { enabled: boolean; selected_model: string | null; loading: boolean; loaded_model: string | null; error: string | null }
+export type AutoLanguage = "ko" | "en"
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
 export type BindingResponse = { success: boolean; binding: ShortcutBinding | null; error: string | null }
 export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
+/**
+ * One line of a continuation suggestion in the composer's bottom panel.
+ * `source` is `bm25` | `prob` (local, always present) or `ai` (on-demand LLM).
+ */
+export type ContinuationSuggestion = { source: string; text: string; score: number }
 export type CustomSounds = { start: boolean; stop: boolean }
 export type EngineType = 
 /**
@@ -1123,6 +1498,18 @@ export type StreamWorkKind = "transcribing" | "polishing"
  */
 export type Theme = "system" | "light" | "dark"
 export type TranscribeAcceleratorSetting = "auto" | "cpu" | "gpu"
+export type TransformDelta = { delta: string; mode: string }
+export type TransformDone = { text: string; mode: string }
+export type TransformErrorEvent = { error: string; category: string; mode: string }
+/**
+ * Static metadata for a mode, surfaced by `list_transform_modes` so the
+ * frontend can build the mode selector without hardcoding strings.
+ */
+export type TransformModeInfo = { id: string; name: string; description: string; 
+/**
+ * Whether this mode reads a user-supplied instruction.
+ */
+takes_instruction: boolean }
 export type TypingTool = "auto" | "wtype" | "kwtype" | "dotool" | "ydotool" | "xdotool"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }
 

@@ -613,6 +613,31 @@
       }
     },
     "transform": {
+      "autoInput": {
+        "titleGroup": "한영 자동 입력",
+        "enable": {
+          "label": "한영 자동 입력",
+          "description": "한영 전환 키나 번호 선택 없이 타이핑하는 단어의 언어를 자동으로 판별합니다."
+        },
+        "model": {
+          "label": "자동 입력 모델",
+          "description": "단어 단위 언어 판별에 사용할 로컬 모델을 선택합니다.",
+          "placeholder": "자동 입력 모델 선택",
+          "downloaded": "다운로드됨",
+          "notDownloaded": "다운로드 필요",
+          "statusLoaded": "로드됨",
+          "statusUnloaded": "언로드됨",
+          "statusLoading": "로딩 중…",
+          "size": "크기: {{size}}",
+          "download": "다운로드",
+          "load": "로드",
+          "unload": "언로드",
+          "downloading": "다운로드 중… {{progress}}%",
+          "cancelDownload": "취소",
+          "delete": "삭제",
+          "error": "자동 입력 오류: {{error}}"
+        }
+      },
       "inputSource": {
         "title": "입력 소스",
         "voiceInput": {
@@ -778,6 +803,16 @@
     "dualAria": "이중 언어 해석",
     "dualKo": "한글",
     "dualEn": "영어",
-    "dualPending": "1 한글 · 2 영어 선택"
+    "dualPending": "1 한글 · 2 영어 선택",
+    "dualAuto": "자동",
+    "dualAutoUnavailable": "모델 미사용",
+    "dualAutoResolving": "해석 중…",
+    "selectAuto": "선택",
+    "spansAria": "해석된 단어 및 언어 전환",
+    "spanOverrideTitle": "클릭하여 언어 전환 (고정)",
+    "stateResolvingAuto": "자동 입력 해석 중…",
+    "autoResolveFailed": "자동 입력 해석 실패",
+    "stateIdleAuto": "Cmd+Enter 커밋 · Esc 취소",
+    "keysHintAuto": "Enter 줄바꿈 · Cmd+Enter 커밋"
   }
 }

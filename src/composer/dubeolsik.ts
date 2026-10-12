@@ -327,18 +327,16 @@ function flush(buf: HangulBuffer, nextJamo?: string): string {
   return out;
 }
 
-// 전체 키 문자열 → 한글 (스페이스는 단어 경계로 보존)
+// 전체 키 문자열 → 한글 (매핑 밖 문자는 조합을 확정하고 그대로 보존)
 export function keysToHangul(keys: string): string {
   const buf: HangulBuffer = { ...EMPTY_BUFFER };
   let out = "";
   for (const k of keys) {
-    if (k === " ") {
-      out += flush(buf);
-      out += " ";
+    const jamo = SHIFT_KEY_TO_JAMO[k] ?? KEY_TO_JAMO[k.toLowerCase()];
+    if (!jamo) {
+      out += flush(buf) + k;
       continue;
     }
-    const jamo = SHIFT_KEY_TO_JAMO[k] ?? KEY_TO_JAMO[k.toLowerCase()];
-    if (!jamo) continue; // 매핑 밖 키는 무시 (호출부에서 처리)
     out += pushJamo(buf, jamo);
   }
   out += composeSyllable(buf.cho ?? "", buf.jung ?? "", buf.jong ?? "");

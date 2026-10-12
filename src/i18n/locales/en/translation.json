@@ -613,6 +613,31 @@
       }
     },
     "transform": {
+      "autoInput": {
+        "titleGroup": "Automatic Bilingual Input",
+        "enable": {
+          "label": "Automatic Bilingual Input",
+          "description": "Automatically detect and convert Korean and English words as you type without manual switching."
+        },
+        "model": {
+          "label": "Auto Input Model",
+          "description": "Select the local language decision model used for word-by-word bilingual interpretation.",
+          "placeholder": "Select an auto input model",
+          "downloaded": "Downloaded",
+          "notDownloaded": "Not downloaded yet",
+          "statusLoaded": "Loaded",
+          "statusUnloaded": "Unloaded",
+          "statusLoading": "Loading…",
+          "size": "Size: {{size}}",
+          "download": "Download",
+          "load": "Load",
+          "unload": "Unload",
+          "downloading": "Downloading… {{progress}}%",
+          "cancelDownload": "Cancel",
+          "delete": "Delete",
+          "error": "Auto input error: {{error}}"
+        }
+      },
       "inputSource": {
         "title": "Input Source",
         "voiceInput": {
@@ -778,6 +803,16 @@
     "dualAria": "Dual-language interpretation",
     "dualKo": "Korean",
     "dualEn": "English",
-    "dualPending": "Press 1 for Korean or 2 for English"
+    "dualPending": "Press 1 for Korean or 2 for English",
+    "dualAuto": "Auto",
+    "dualAutoUnavailable": "Unavailable",
+    "dualAutoResolving": "Resolving…",
+    "selectAuto": "Select",
+    "spansAria": "Resolved words with language override",
+    "spanOverrideTitle": "Click to flip language",
+    "stateResolvingAuto": "Resolving auto input…",
+    "autoResolveFailed": "Auto input resolution failed",
+    "stateIdleAuto": "Cmd+Enter to commit · Esc to cancel",
+    "keysHintAuto": "Enter for new line · Cmd+Enter to commit"
   }
 }

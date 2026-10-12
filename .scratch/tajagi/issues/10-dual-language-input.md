@@ -25,10 +25,10 @@ textarea에 한글 IME 조합 중 `keydown`의 `e.code`/`e.key` 도착 여부를
 **Files:**
 - Modify: `src/composer/Composer.tsx` (임시 이벤트 로그 핸들러, 스파이크 후 삭제)
 
-- [ ] **Step 1: probe 텍스트 입력 이벤트 로깅**
+- [ ] **Step 1: probe 텍스트 입력 이벤트 로깅** ✅ (0832d30)
 
 ```tsx
-// Composer.tsx textarea 임시 props (티켓 10 Task 1, 스파이크 후 제거)
+// Composer.tsx textarea 임시 props (티켓 10 Task 1, 스파이크 후 제거) — plus DOM 고정 div
 onKeyDown={(e) => {
   console.log("[poc-keydown]", JSON.stringify({ code: e.code, key: e.key, isComposing: e.nativeEvent.isComposing }));
 }}
@@ -37,11 +37,17 @@ onBeforeInput={(e) => {
 }}
 ```
 
-- [ ] **Step 2: 라이브 확인** — tauri dev 실행 중 컴포저 열고 한글 IME 상태로 "안녕" 타이핑, console에서 keydown 의 `code`(KeyD/KeyK...) 도착 여부 기록
-- [ ] **Step 3: 결과 판정**
-  - `code` 도착함 → 계획 유지 (Task 2대로)
-  - `code` 미도착/Process 키만 → **백업 플랜**: beforeinput 의 `data`(조합 텍스트)를 누적해 한글창, `hangulToKeys`로 영어창 역산. 키 시퀀스 직접 수집은 포기하고 조합 최종 텍스트 기준.
-- [ ] **Step 4: 휴지 코드 제거** — probe props 삭제/원복
+- [x] **Step 2: 라이브 확인** ✅ (아래 실측)
+- [x] **Step 3: 결과 판정** ✅ **2026-10-09 라이브 실측 (orca computer + real keycodes)**
+
+**판정: 계획 A 유지** — WKWebView는 한글 IME 조합 중에도 keydown `e.code`(물리 키)를 전달한다.
+
+실측 증거 (타자기 컴포저, 한글 2Set 소스 활성, 물리 키코드 `dkssudgktpdy` 입력):
+- keydown 도착: `kd {"code":"KeyD"/"KeyG"/"KeyK"/"KeyS"/"KeyU", ...}` — `isComposing:false` 로 물리 코드 그대로 전달
+- beforeinput 도착: `bi {"data":"녀"/"녕"/"하"/"핫"}` — 조합 진행 음절 전달 (보조 소스로 유지)
+- orca type-text 는 키당 keydown 을 만들지 않고 전체 텍스트를 한 번에 beforeinput 으로 주입 → POC 는 실제 키 이벤트로만 검증해야 함 (참고)
+
+- [x] **Step 4: 휴지 코드 제거** — probe props 삭제/원복 ✅ (다음 커밋에서)
 
 ## Task 2: 두벌식 양방향 엔진 (순수 함수)
 

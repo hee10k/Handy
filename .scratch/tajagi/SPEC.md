@@ -55,6 +55,9 @@ AI 채팅·문서·메일에 쓸 텍스트를 만들 때, 사용자는 어디에
 41. As a 사용자, I want Enter를 누르면 1/2 선택이 강제된다, so that 언어 미확정 상태로 넘어가지 않는다.
 42. As a 사용자, I want Cmd/Ctrl+Enter로 전체 초안을 최종 커밋(붙여넣기)한다, so that 구 확정과 최종 전달이 분리된다.
 43. As a 사용자, I want ⌥(macOS)/Alt(Windows)+1/2로 숫자 '1'/'2' 자체를 입력할 수 있다, so that 선택자와 충돌하지 않는다.
+44. As a 사용자, I want 한/영 전환 없이 타이핑만 해도 단어마다 언어가 자동 판별되어 초안에 쌓인다, so that 1/2 선택 단계를 매번 거치지 않는다.
+45. As a 사용자, I want 자동 판별이 틀린 단어를 클릭(또는 1/2)으로 뒤집을 수 있다, so that 자동 결과를 신뢰하되 최종 결정권은 내가 갖는다.
+46. As a 사용자, I want 설정에서 자동입력용 로컬 모델을 검색·다운로드(진행률/취소)·삭제·로드/언로드한다, so that 필요한 만큼만 디스크와 메모리를 쓴다.
 
 ## Implementation Decisions
 
@@ -69,6 +72,8 @@ AI 채팅·문서·메일에 쓸 텍스트를 만들 때, 사용자는 어디에
 - **i18n**: 셸·기존 로케일 유지. 신규 키는 ko/en만 번역.
 - **퀵 액션(09)**: 설정 슬롯 10개 `quick_action_slots`(기본 4 = 기본 모드, 5~10 빈). 컴포저는 슬롯 순서로 퀵버튼 렌더 + Cmd/Ctrl+1..N 바인딩(포커스 중, IME 조합 억제). 전경 앱 카테고리(브라우저/에디터/메일/기타) 감지 → MVP는 우선순위/강조만 변경, 실패 시 고정 기본 폴백. (카테고리 감지는 macOS AX 대신 `NSWorkspace.frontmostApplication` 번들 id 기반 — 접근성 권한 불요, 단위 테스트 가능) ✔ 구현 완료 (2026-08-20)
 - **한/영 동시 입력(10)**: 컴포저 타이핑 시 **물리 키(keydown `e.code`)를 프론트에서 캡처**해 IME 상태와 무관하게 이중 해석 — `preventDefault()`로 OS/IME 삽입 차단, textarea는 초안 표시 전용으로 전환. **두벌식 양방향 순수 함수**(영문 키→자모→한글 음절 조합: `dkssudgktpdy`→안녕하세요, 한글 음절→자모→영문 키: 안녕하세요→`dkssudgktpdy`)로 한글/영어 두 출력창을 라이브 갱신. **구(chunk) 상태 머신**(EMPTY→COMPOSING→COMMITTED): 1/2=한글/영어 확정→초안 append, Enter=1/2 강제(빈 구에선 no-op), ⌥/Alt+1/2=리터럴 숫자, 3-0=리터럴, Backspace=양 창 롤백, Space=단어 경계, Cmd/Ctrl+Enter=**최종 커밋**(기존 커밋 path 재사용), Esc=구 폐기/닫기. IPC 없음(키스트로크당 0 지연). 기존 기능(퀵액션/보정/추천/변환 모드)과 공존. **리스크**: WKWebView IME 조합 중 keydown 신뢰성 → 구현 1단계 POC 스파이크, 실패 시 beforeinput 기반 백업 플랜.
+
+- **자동 한영 입력(13)**: 컴포저에 세 번째 모드를 추가한다 — 한/영 전환 없이 타이핑하면 **단어(span) 단위로 언어를 자동 판별**해 초안에 반영한다. 판별은 2계층: (1) 번들 wordfreq 사전(`small_ko`/`large_en`, 앱 시작 시 워밍)으로 후보별 등재 여부를 보고 한쪽만 등재되면 확정(0ms, 실측 84.8% 커버·오답 0), (2) 남은 모호 span만 로컬 GGUF 모델(llama.cpp b11429 `/completion`, 후보별 독립 yes/no 판정 + grammar `"yes"|"no"`, `logP(yes)−logP(no)` margin 비교)로 판정. **A/B 단일 선택 프롬프트는 폐기**(순서 편향·literal-match 편향으로 50% / flips 78/78) — 독립 판정은 79.7% / flips 0. 기본 모델은 Qwen3-0.6B-Q8_0 하나만 카탈로그에 두고 설정에서 검색·다운로드(진행률/취소)·삭제·로드/언로드한다. 런타임은 공식 프리빌트 b11429를 sha256 검증 후 설치. 자동 결과도 span 클릭/1·2로 뒤집을 수 있고 수동 경로는 그대로 보존된다. 상세·실측: `issues/13-auto-bilingual-input.md`
 
 ## Testing Decisions
 

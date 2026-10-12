@@ -77,3 +77,19 @@ describe("roundtrip", () => {
     expect(keysToHangul(keys)).toBe(hangul);
   });
 });
+
+describe("literal input boundaries", () => {
+  it.each([
+    ["gksrmf!?", "한글!?"],
+    ["rk!sk", "가!나"],
+    ["r!k", "ㄱ!ㅏ"],
+    ["rkqt.k", "값.ㅏ"],
+    ["rk3sk", "가3나"],
+    ["(gksrmf)", "(한글)"],
+    ["rk\nsk", "가\n나"],
+    ["rk🙂sk", "가🙂나"],
+    ["!@#$%^&*()_+-=[]{};:,.<>/?\\|`~", "!@#$%^&*()_+-=[]{};:,.<>/?\\|`~"],
+  ])("%j preserves literals and separates Hangul composition", (keys, text) => {
+    expect(keysToHangul(keys)).toBe(text);
+  });
+});
